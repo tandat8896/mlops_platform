@@ -69,22 +69,45 @@ jobs:
           
           cd "$REPO_DIR" || { echo "Failed to cd to $REPO_DIR"; exit 1; }
           
-          # Try to find and source conda
-          if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-            source "$HOME/miniconda3/etc/profile.d/conda.sh"
-          elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-            source "$HOME/anaconda3/etc/profile.d/conda.sh"
-          elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
-            source "/opt/conda/etc/profile.d/conda.sh"
+          echo "=== Find and Setup Conda ==="
+          # Try to find conda in multiple locations
+          CONDA_PATHS=(
+            "$HOME/miniconda3"
+            "$HOME/anaconda3"
+            "/opt/conda"
+            "/usr/local/miniconda3"
+            "/usr/local/anaconda3"
+          )
+          
+          CONDA_FOUND=false
+          for CONDA_PATH in "${CONDA_PATHS[@]}"; do
+            if [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
+              echo "Found conda at: $CONDA_PATH"
+              source "$CONDA_PATH/etc/profile.d/conda.sh"
+              CONDA_FOUND=true
+              break
+            fi
+          done
+          
+          if [ "$CONDA_FOUND" = true ]; then
+            echo "Conda initialized"
+            # Try to activate environment
+            conda activate mlops-cicd 2>/dev/null || conda activate base 2>/dev/null || echo "Could not activate conda environment"
+            echo "Conda environment: $CONDA_DEFAULT_ENV"
+            # Add conda bin to PATH
+            export PATH="$CONDA_PREFIX/bin:$PATH"
+          else
+            echo "Conda not found in standard locations"
+            # Try to find conda in PATH
+            if command -v conda &> /dev/null; then
+              echo "Conda found in PATH"
+              conda activate mlops-cicd 2>/dev/null || conda activate base 2>/dev/null || echo "Could not activate conda environment"
+            else
+              echo "Conda not found, will try to install DVC with pip"
+            fi
           fi
           
-          # Activate conda environment if conda is available
-          if command -v conda &> /dev/null; then
-            conda activate mlops-cicd || conda activate base
-            echo "Conda activated"
-          else
-            echo "Conda not found, using system Python"
-          fi
+          echo "Current PATH: $PATH"
           
           echo "=== Pull latest code ==="
           # Ensure remote is set correctly
@@ -95,11 +118,33 @@ jobs:
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
           echo "Data changed: $DATA_CHANGED"
           
-          echo "=== Check DVC ==="
+          echo "=== Check and Install DVC ==="
           if ! command -v dvc &> /dev/null; then
-            echo "DVC not found in PATH"
+            echo "DVC not found, trying to install..."
+            # Try pip install
+            if command -v pip3 &> /dev/null; then
+              pip3 install dvc dvc-s3 --user
+              export PATH="$HOME/.local/bin:$PATH"
+            elif command -v pip &> /dev/null; then
+              pip install dvc dvc-s3 --user
+              export PATH="$HOME/.local/bin:$PATH"
+            elif [ "$CONDA_FOUND" = true ] && command -v conda &> /dev/null; then
+              conda install -y -c conda-forge dvc dvc-s3
+            else
+              echo "Cannot install DVC. Please install manually."
+              echo "PATH: $PATH"
+              which dvc || echo "DVC not found"
+              exit 1
+            fi
+          fi
+          
+          # Verify DVC installation
+          if command -v dvc &> /dev/null; then
+            echo "DVC found: $(which dvc)"
+            dvc --version
+          else
+            echo "DVC still not found after installation attempt"
             echo "PATH: $PATH"
-            which dvc || echo "DVC not found"
             exit 1
           fi
           
