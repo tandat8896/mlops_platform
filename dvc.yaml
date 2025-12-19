@@ -1,0 +1,24 @@
+# DVC Pipeline Configuration
+# This pipeline tracks data changes and triggers training
+
+stages:
+  train:
+    cmd: python train.py --epochs ${train.epochs} --model ${train.model} --batch
+      ${train.batch_size}
+    deps:
+    - train.py
+    - data/data.yaml
+    - data/train/images
+    - data/train/labels
+    - data/val/images
+    - data/val/labels
+    - data/test/images
+    - data/test/labels
+    - checkpoints/${train.model}.pt
+    params:
+    - train.epochs
+    - train.model
+    - train.batch_size
+    - train.imgsz
+    outs: []
+    plots: []
