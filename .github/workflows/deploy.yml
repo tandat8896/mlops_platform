@@ -254,6 +254,27 @@ jobs:
           echo "Disk space AFTER cleanup:"
           df -h $HOME 2>/dev/null || df -h / 2>/dev/null || true
           
+          echo "=== Install System Dependencies for OpenCV ==="
+          # Install system libraries required by opencv-python-headless
+          if command -v apt-get &> /dev/null; then
+            echo "Installing OpenCV system dependencies..."
+            sudo apt-get update -qq 2>/dev/null || true
+            sudo apt-get install -y --no-install-recommends \
+              libgl1-mesa-glx \
+              libglib2.0-0 \
+              libgomp1 \
+              2>/dev/null || {
+              echo "Warning: Failed to install some system dependencies, continuing..."
+            }
+          elif command -v yum &> /dev/null; then
+            echo "Installing OpenCV system dependencies (yum)..."
+            sudo yum install -y mesa-libGL glib2 libgomp 2>/dev/null || {
+              echo "Warning: Failed to install some system dependencies, continuing..."
+            }
+          else
+            echo "Warning: Cannot detect package manager, skipping system dependencies"
+          fi
+          
           echo "=== Check and Install Dependencies ==="
           # Check if torch is installed (indicator that dependencies are installed)
           if ! python -c "import torch" 2>/dev/null; then
