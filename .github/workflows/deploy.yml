@@ -92,49 +92,6 @@ jobs:
             pip install --no-cache-dir dvc[s3]
           fi
           
-          echo "=== Start MLflow Server ==="
-          # Check if MLflow is installed
-          if ! python -c "import mlflow" 2>/dev/null; then
-            echo "Installing MLflow..."
-            pip install --no-cache-dir mlflow==3.7.0
-          fi
-          
-          # Create MLflow data directory
-          mkdir -p mlflow/run_env/data
-          cd mlflow/run_env/data
-          
-          # Check if MLflow server is already running
-          if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
-            echo "✓ MLflow server already running"
-          else
-            echo "Starting MLflow server in background..."
-            # Kill any existing MLflow process (non-blocking)
-            (pkill -f "mlflow server" 2>/dev/null; sleep 2) &
-            sleep 3
-            
-            # Start MLflow server
-            nohup python -m mlflow server \
-              --backend-store-uri sqlite:///./mlflow.db \
-              --serve-artifacts \
-              --host 0.0.0.0 \
-              --port 5001 \
-              > /tmp/mlflow.log 2>&1 &
-            
-            echo "Waiting for MLflow server to start..."
-            sleep 5
-            for i in {1..20}; do
-              if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
-                echo "✓ MLflow server is ready!"
-                break
-              fi
-              sleep 2
-            done
-          fi
-          
-          cd $HOME/Repository/mlops_platform
-          export MLFLOW_TRACKING_URI="http://localhost:5001"
-          echo "MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI"
-          
           echo "=== Pull latest DVC data ==="
           dvc pull
           
