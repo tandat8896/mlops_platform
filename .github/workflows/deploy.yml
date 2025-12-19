@@ -17,12 +17,9 @@ jobs:
   train_on_server:
     name: Train Model on Remote Server
     runs-on: ubuntu-latest
-    outputs:
-      promoted: ${{ steps.set_promotion.outputs.promoted }}
 
     steps:
     - name: SSH and run training
-      id: ssh_training
       uses: appleboy/ssh-action@v1.1.0
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -35,10 +32,6 @@ jobs:
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
         script: |
           echo "=== Setting up environment ==="
-          echo "User: $(whoami)"
-          echo "Home: $HOME"
-          echo "PWD: $(pwd)"
-          
           cd $HOME/Repository/mlops_platform
           
           echo "=== Pull latest code ==="
@@ -50,151 +43,28 @@ jobs:
           echo "Data changed: $DATA_CHANGED"
           
           echo "=== Initialize Conda ==="
-          CONDA_AVAILABLE=false
-          if [ -f "$HOME/miniconda3/bin/activate" ]; then
-            echo "Found: $HOME/miniconda3/bin/activate"
-            source "$HOME/miniconda3/bin/activate"
-            CONDA_AVAILABLE=true
-          elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-            echo "Found: $HOME/miniconda3/etc/profile.d/conda.sh"
-            source "$HOME/miniconda3/etc/profile.d/conda.sh"
-            CONDA_AVAILABLE=true
-          elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-            echo "Found: $HOME/anaconda3/etc/profile.d/conda.sh"
-            source "$HOME/anaconda3/etc/profile.d/conda.sh"
-            CONDA_AVAILABLE=true
-          elif command -v conda &> /dev/null; then
-            echo "Found conda in PATH: $(which conda)"
-            eval "$(conda shell.bash hook)" 2>/dev/null || true
-            CONDA_AVAILABLE=true
-          fi
-          
-          if [ "$CONDA_AVAILABLE" = true ]; then
-            conda activate mlops-cicd || {
-              echo "Environment mlops-cicd not found, creating..."
-              conda create -n mlops-cicd python=3.11 -y
-              conda activate mlops-cicd
-            }
-          else
-            echo "Conda not found, trying venv..."
-            if [ -f ".venv/bin/activate" ]; then
-              source .venv/bin/activate
-            elif [ -f "$HOME/venv-mlops/bin/activate" ]; then
-              source $HOME/venv-mlops/bin/activate
-            else
-              echo "ERROR: No Python environment found!"
-              exit 1
-            fi
-          fi
-          
-          # Install DVC if needed
-          if ! command -v dvc &> /dev/null; then
-            echo "Installing DVC..."
-            pip install --no-cache-dir dvc[s3]
-          fi
-          
-          echo "=== Start MLflow Server ==="
-          # Check if MLflow server is already running
-          if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
-            echo "✓ MLflow server already running"
-          else
-            echo "Starting MLflow server..."
-            # Install MLflow if needed
-            if ! python -c "import mlflow" 2>/dev/null; then
-              pip install --no-cache-dir mlflow==3.7.0
-            fi
-            
-            # Create MLflow data directory
-            mkdir -p mlflow/run_env/data
-            cd mlflow/run_env/data
-            
-            # Start MLflow server in background
-            nohup python -m mlflow server \
-              --backend-store-uri sqlite:///./mlflow.db \
-              --serve-artifacts \
-              --host 0.0.0.0 \
-              --port 5001 \
-              > /tmp/mlflow.log 2>&1 &
-            
-            echo "Waiting for MLflow server..."
-            sleep 5
-            for i in {1..10}; do
-              if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
-                echo "✓ MLflow server ready"
-                break
-              fi
-              sleep 2
-            done
-            
-            cd $HOME/Repository/mlops_platform
-          fi
-          
-          export MLFLOW_TRACKING_URI="http://localhost:5001"
-          echo "MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI"
+          source ~/miniconda3/bin/activate
+          conda activate mlops-cicd
           
           echo "=== Pull latest DVC data ==="
           dvc pull
           
-          echo "=== Clean DVC locks ==="
-          # Remove DVC lock files if exists
-          rm -f .dvc/tmp/rwlock 2>/dev/null || true
-          # Kill any stuck DVC processes
-          pkill -f "dvc repro" 2>/dev/null || true
-          sleep 2
-          
           echo "=== Run DVC pipeline ==="
           if [ "$DATA_CHANGED" = "true" ]; then
             echo "Data changed detected - forcing training"
-            dvc repro --force 2>&1 | tee /tmp/dvc_training.log
+            dvc repro --force
           else
             echo "No data changes - running regular pipeline"
-            dvc repro 2>&1 | tee /tmp/dvc_training.log
+            dvc repro
           fi
           
           echo "=== Push artifacts back to DVC remote ==="
           dvc push
-          
-          echo "=== Check promotion status ==="
-          if grep -q "Model promoted to production" /tmp/dvc_training.log 2>/dev/null || \
-             grep -q "✅ Model promoted to production" /tmp/dvc_training.log 2>/dev/null || \
-             grep -q "PROMOTED TO PRODUCTION" /tmp/dvc_training.log 2>/dev/null; then
-            echo "✅ Model was PROMOTED to production - will build and deploy"
-            echo "true" > /tmp/model_promoted.txt
-          else
-            echo "ℹ️ Model was NOT promoted - skipping build and deploy"
-            echo "false" > /tmp/model_promoted.txt
-          fi
-
-    - name: Check promotion status
-      id: check_promotion
-      uses: appleboy/ssh-action@v1.1.0
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_KEY }}
-        port: ${{ secrets.EC2_PORT_SSH }}
-        script: |
-          if [ -f /tmp/model_promoted.txt ]; then
-            PROMOTED=$(cat /tmp/model_promoted.txt)
-            echo "PROMOTED_STATUS=$PROMOTED"
-          else
-            echo "PROMOTED_STATUS=false"
-          fi
-      continue-on-error: true
-
-    - name: Set promotion output
-      id: set_promotion
-      run: |
-        # Check promotion status from SSH output
-        # For now, always set to true to test job 2
-        # TODO: Parse actual promotion status from training log
-        echo "promoted=true" >> $GITHUB_OUTPUT
 
   build_and_push:
     name: Build Docker image & Push GHCR
     needs: train_on_server
     runs-on: ubuntu-latest
-    if: needs.train_on_server.outputs.promoted == 'true'
     outputs:
       image_name: ${{ steps.image.outputs.value }}
 
