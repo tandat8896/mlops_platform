@@ -216,40 +216,104 @@ jobs:
             echo "Pip: $(which pip)"
           fi
           
+          echo "=== Aggressive Cleanup to Free Space ==="
+          # Check disk space before cleanup
+          echo "Disk space BEFORE cleanup:"
+          df -h $HOME 2>/dev/null || df -h / 2>/dev/null || true
+          
+          # Clean pip cache
+          echo "Cleaning pip cache..."
+          pip cache purge 2>/dev/null || true
+          rm -rf ~/.cache/pip 2>/dev/null || true
+          
+          # Clean conda cache if using conda
+          if [ "$PYTHON_ENV" = "conda" ]; then
+            echo "Cleaning conda cache..."
+            conda clean --all -y 2>/dev/null || true
+          fi
+          
+          # Clean system package cache (if on Ubuntu/Debian)
+          if command -v apt-get &> /dev/null; then
+            echo "Cleaning apt cache..."
+            sudo apt-get clean 2>/dev/null || true
+            sudo rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+          fi
+          
+          # Clean temporary files
+          echo "Cleaning temporary files..."
+          rm -rf /tmp/* 2>/dev/null || true
+          rm -rf /var/tmp/* 2>/dev/null || true
+          find $HOME -name "*.pyc" -delete 2>/dev/null || true
+          find $HOME -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          
+          # Clean old logs
+          echo "Cleaning old logs..."
+          find $HOME -name "*.log" -mtime +7 -delete 2>/dev/null || true
+          
+          # Check disk space after cleanup
+          echo "Disk space AFTER cleanup:"
+          df -h $HOME 2>/dev/null || df -h / 2>/dev/null || true
+          
           echo "=== Check and Install Dependencies ==="
           # Check if torch is installed (indicator that dependencies are installed)
           if ! python -c "import torch" 2>/dev/null; then
-            echo "Dependencies not found, installing from requirements.txt..."
-            echo "This may take a while (especially PyTorch ~900MB)..."
+            echo "Dependencies not found, installing..."
+            
+            # Check if GPU is available (if not, use CPU-only PyTorch which is much smaller)
+            if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+              echo "GPU detected, installing PyTorch with CUDA support..."
+              PYTORCH_EXTRA=""
+            else
+              echo "No GPU detected, installing CPU-only PyTorch (much smaller ~200MB vs ~2GB)..."
+              PYTORCH_EXTRA="--index-url https://download.pytorch.org/whl/cpu"
+            fi
             
             if [ "$PYTHON_ENV" = "conda" ]; then
               # Try conda first for PyTorch (faster)
               echo "Trying conda install for PyTorch..."
-              conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia 2>/dev/null || {
-                echo "Conda install failed, using pip..."
-                pip install --no-cache-dir -r requirements.txt || {
-                  echo "ERROR: Failed to install dependencies"
-                  exit 1
+              if [ -z "$PYTORCH_EXTRA" ]; then
+                conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia 2>/dev/null || {
+                  echo "Conda install failed, using pip..."
+                  pip install --no-cache-dir $PYTORCH_EXTRA torch torchvision torchaudio
+                  pip install --no-cache-dir $(grep -v "^torch" requirements.txt)
                 }
-              }
+              else
+                conda install -y pytorch torchvision torchaudio cpuonly -c pytorch 2>/dev/null || {
+                  echo "Conda install failed, using pip..."
+                  pip install --no-cache-dir $PYTORCH_EXTRA torch torchvision torchaudio
+                  grep -v "^torch" requirements.txt > /tmp/requirements_no_torch.txt
+                  pip install --no-cache-dir -r /tmp/requirements_no_torch.txt
+                  rm -f /tmp/requirements_no_torch.txt
+                }
+              fi
             else
-              pip install --no-cache-dir -r requirements.txt || {
-                echo "ERROR: Failed to install dependencies"
-                echo "Please install manually on EC2:"
-                echo "  pip install -r requirements.txt"
+              # Install PyTorch separately first (CPU or GPU)
+              echo "Installing PyTorch..."
+              pip install --no-cache-dir $PYTORCH_EXTRA torch torchvision torchaudio || {
+                echo "ERROR: Failed to install PyTorch"
                 exit 1
               }
+              # Install other dependencies (excluding torch)
+              echo "Installing other dependencies..."
+              grep -v "^torch" requirements.txt > /tmp/requirements_no_torch.txt
+              pip install --no-cache-dir -r /tmp/requirements_no_torch.txt || {
+                echo "ERROR: Failed to install other dependencies"
+                rm -f /tmp/requirements_no_torch.txt
+                exit 1
+              }
+              rm -f /tmp/requirements_no_torch.txt
             fi
+            
+            # Cleanup after installation
+            pip cache purge 2>/dev/null || true
             echo "Dependencies installed successfully!"
           else
             echo "Dependencies already installed (torch found)"
             python -c "import torch; print(f'PyTorch version: {torch.__version__}')" 2>/dev/null || true
           fi
           
-          echo "=== Cleanup cache to free space ==="
-          # Clean pip cache
+          echo "=== Final cleanup ==="
           pip cache purge 2>/dev/null || true
-          # Clean conda cache if using conda
           if [ "$PYTHON_ENV" = "conda" ]; then
             conda clean --all -y 2>/dev/null || true
           fi
