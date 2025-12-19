@@ -271,6 +271,9 @@ def _upload_model_to_s3(model_path: str, s3_bucket: str, s3_key: str) -> None:
     import boto3
     from botocore.exceptions import NoCredentialsError, ClientError
     
+    # Clean bucket name (remove trailing slash if any)
+    s3_bucket = s3_bucket.rstrip('/')
+    
     logger.info(f"Uploading model to S3: s3://{s3_bucket}/{s3_key}")
     
     s3_client = boto3.client('s3')
@@ -411,11 +414,15 @@ def register_model_to_mlflow(
     if should_promote:
         client.set_registered_model_alias(model_name, "production", result.version)
         logger.info(f"\n✅ Model v{result.version} PROMOTED TO PRODUCTION")
-        _upload_model_to_s3(
-            model_path=model_path,
-            s3_bucket=os.getenv("S3_BUCKET"),
-            s3_key=f"{model_name}/best.pt"
-        )
+        s3_bucket = os.getenv("S3_BUCKET", "").rstrip('/')
+        if s3_bucket:
+            _upload_model_to_s3(
+                model_path=model_path,
+                s3_bucket=s3_bucket,
+                s3_key=f"{model_name}/best.pt"
+            )
+        else:
+            logger.warning("S3_BUCKET not set, skipping S3 upload")
     else:
         logger.info(f"\nℹ Model v{result.version} registered but NOT promoted to production")
     

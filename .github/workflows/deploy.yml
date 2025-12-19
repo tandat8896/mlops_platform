@@ -254,89 +254,71 @@ jobs:
           echo "Disk space AFTER cleanup:"
           df -h $HOME 2>/dev/null || df -h / 2>/dev/null || true
           
-          echo "=== Install System Dependencies for OpenCV ==="
-          # Install system libraries required by opencv-python-headless
+          echo "=== Complete Setup: System + Python Dependencies ==="
+          
+          # Step 1: Install system dependencies for OpenCV (REQUIRED)
+          echo "Step 1/3: Installing system dependencies for OpenCV..."
           if command -v apt-get &> /dev/null; then
-            echo "Installing OpenCV system dependencies..."
-            sudo apt-get update -qq 2>/dev/null || true
-            sudo apt-get install -y --no-install-recommends \
-              libgl1-mesa-glx \
-              libglib2.0-0 \
-              libgomp1 \
-              2>/dev/null || {
-              echo "Warning: Failed to install some system dependencies, continuing..."
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 libgomp1 || {
+              echo "ERROR: Failed to install system dependencies"
+              exit 1
             }
           elif command -v yum &> /dev/null; then
-            echo "Installing OpenCV system dependencies (yum)..."
-            sudo yum install -y mesa-libGL glib2 libgomp 2>/dev/null || {
-              echo "Warning: Failed to install some system dependencies, continuing..."
+            sudo yum install -y mesa-libGL glib2 libgomp || {
+              echo "ERROR: Failed to install system dependencies"
+              exit 1
             }
-          else
-            echo "Warning: Cannot detect package manager, skipping system dependencies"
           fi
           
-          echo "=== Check and Install Dependencies ==="
-          # Check if torch is installed (indicator that dependencies are installed)
-          if ! python -c "import torch" 2>/dev/null; then
-            echo "Dependencies not found, installing..."
+          # Step 2: Check if dependencies already installed
+          echo "Step 2/3: Checking existing dependencies..."
+          DEPS_OK=true
+          python -c "import torch; import cv2; import ultralytics" 2>/dev/null || DEPS_OK=false
+          
+          if [ "$DEPS_OK" = "true" ]; then
+            echo "✓ All dependencies already installed!"
+            python -c "import torch; print(f'PyTorch: {torch.__version__}')" 2>/dev/null || true
+            python -c "import cv2; print(f'OpenCV: {cv2.__version__}')" 2>/dev/null || true
+          else
+            echo "Step 3/3: Installing Python dependencies..."
             
-            # Check if GPU is available (if not, use CPU-only PyTorch which is much smaller)
-            if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
-              echo "GPU detected, installing PyTorch with CUDA support..."
-              PYTORCH_EXTRA=""
+            # Detect GPU
+            if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null 2>&1; then
+              echo "GPU detected - installing PyTorch with CUDA..."
+              PYTORCH_CMD="pip install --no-cache-dir torch torchvision torchaudio"
             else
-              echo "No GPU detected, installing CPU-only PyTorch (much smaller ~200MB vs ~2GB)..."
-              PYTORCH_EXTRA="--index-url https://download.pytorch.org/whl/cpu"
+              echo "No GPU - installing CPU-only PyTorch (~200MB vs ~2GB)..."
+              PYTORCH_CMD="pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio"
             fi
             
-            if [ "$PYTHON_ENV" = "conda" ]; then
-              # Try conda first for PyTorch (faster)
-              echo "Trying conda install for PyTorch..."
-              if [ -z "$PYTORCH_EXTRA" ]; then
-                conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia 2>/dev/null || {
-                  echo "Conda install failed, using pip..."
-                  pip install --no-cache-dir $PYTORCH_EXTRA torch torchvision torchaudio
-                  pip install --no-cache-dir $(grep -v "^torch" requirements.txt)
-                }
-              else
-                conda install -y pytorch torchvision torchaudio cpuonly -c pytorch 2>/dev/null || {
-                  echo "Conda install failed, using pip..."
-                  pip install --no-cache-dir $PYTORCH_EXTRA torch torchvision torchaudio
-                  grep -v "^torch" requirements.txt > /tmp/requirements_no_torch.txt
-                  pip install --no-cache-dir -r /tmp/requirements_no_torch.txt
-                  rm -f /tmp/requirements_no_torch.txt
-                }
-              fi
-            else
-              # Install PyTorch separately first (CPU or GPU)
-              echo "Installing PyTorch..."
-              pip install --no-cache-dir $PYTORCH_EXTRA torch torchvision torchaudio || {
-                echo "ERROR: Failed to install PyTorch"
-                exit 1
-              }
-              # Install other dependencies (excluding torch)
-              echo "Installing other dependencies..."
-              grep -v "^torch" requirements.txt > /tmp/requirements_no_torch.txt
-              pip install --no-cache-dir -r /tmp/requirements_no_torch.txt || {
-                echo "ERROR: Failed to install other dependencies"
-                rm -f /tmp/requirements_no_torch.txt
-                exit 1
-              }
-              rm -f /tmp/requirements_no_torch.txt
-            fi
+            # Install PyTorch first
+            echo "Installing PyTorch..."
+            $PYTORCH_CMD || {
+              echo "ERROR: Failed to install PyTorch"
+              exit 1
+            }
             
-            # Cleanup after installation
+            # Install other dependencies (excluding torch from requirements.txt)
+            echo "Installing other dependencies..."
+            grep -v "^torch" requirements.txt > /tmp/req_no_torch.txt
+            pip install --no-cache-dir -r /tmp/req_no_torch.txt || {
+              echo "ERROR: Failed to install dependencies"
+              rm -f /tmp/req_no_torch.txt
+              exit 1
+            }
+            rm -f /tmp/req_no_torch.txt
+            
+            # Verify installation
+            echo "Verifying installation..."
+            python -c "import torch; import cv2; import ultralytics; print('✓ All imports successful!')" || {
+              echo "ERROR: Import verification failed"
+              exit 1
+            }
+            
+            # Cleanup
             pip cache purge 2>/dev/null || true
-            echo "Dependencies installed successfully!"
-          else
-            echo "Dependencies already installed (torch found)"
-            python -c "import torch; print(f'PyTorch version: {torch.__version__}')" 2>/dev/null || true
-          fi
-          
-          echo "=== Final cleanup ==="
-          pip cache purge 2>/dev/null || true
-          if [ "$PYTHON_ENV" = "conda" ]; then
-            conda clean --all -y 2>/dev/null || true
+            echo "✓ Dependencies installed successfully!"
           fi
           
           echo "=== Check and Install DVC ==="
