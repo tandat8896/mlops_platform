@@ -35,7 +35,13 @@ jobs:
           cd $HOME/Repository/mlops_platform
           
           echo "=== Pull latest code ==="
-          git pull
+          # Stash or reset local changes to allow pull
+          git stash || true
+          git pull || {
+            echo "Git pull failed, trying to reset and pull..."
+            git reset --hard origin/master || git reset --hard origin/main || true
+            git pull
+          }
           
           echo "=== Check if data.dvc changed ==="
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only | grep -q "data.dvc" && echo "true" || echo "false")
@@ -225,12 +231,29 @@ jobs:
               pip3 install --no-cache-dir mlflow==3.7.0 || pip install --no-cache-dir mlflow==3.7.0
             fi
             
-            # Check if MLflow server is already running
+            # Check if MLflow server is already running and accessible
+            MLFLOW_RUNNING=false
             if pgrep -f "mlflow server" > /dev/null; then
-              echo "MLflow server process already running"
-            else
+              echo "MLflow server process found, checking if accessible..."
+              if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
+                echo "✓ MLflow server is already running and accessible"
+                MLFLOW_RUNNING=true
+              else
+                echo "MLflow process found but not accessible, killing and restarting..."
+                pkill -f "mlflow server" || true
+                sleep 2
+              fi
+            fi
+            
+            if [ "$MLFLOW_RUNNING" = false ]; then
               echo "Starting MLflow server in background..."
               cd "$MLFLOW_DATA_DIR"
+              
+              # Kill any existing MLflow processes on port 5001
+              lsof -ti:5001 | xargs kill -9 2>/dev/null || true
+              sleep 1
+              
+              # Start MLflow server
               nohup python3 -m mlflow server \
                 --backend-store-uri sqlite:///./mlflow.db \
                 --serve-artifacts \
@@ -239,6 +262,9 @@ jobs:
                 > /tmp/mlflow.log 2>&1 &
               MLFLOW_PID=$!
               echo "MLflow server started with PID: $MLFLOW_PID"
+              
+              # Give it a moment to start
+              sleep 3
               
               # Wait for MLflow server to be ready
               echo "Waiting for MLflow server to start..."
