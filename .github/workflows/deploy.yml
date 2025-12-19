@@ -234,7 +234,7 @@ jobs:
         build-args: |
           MODEL_VERSION=${{ steps.tag.outputs.model_version }}
         cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-to: type=gha,mode=min
 
   deploy_ec2:
     name: Deploy to EC2
@@ -255,23 +255,54 @@ jobs:
         port: ${{ secrets.EC2_PORT_DEPLOY }}
         envs: IMAGE_NAME,GITHUB_TOKEN,GITHUB_ACTOR
         script: |
-          echo "Logging in to GitHub Container Registry"
-          echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+          echo "=== Check Docker installation ==="
+          # Find docker binary
+          if command -v docker &> /dev/null; then
+            DOCKER_CMD="docker"
+          elif [ -f "/usr/bin/docker" ]; then
+            DOCKER_CMD="/usr/bin/docker"
+          elif [ -f "/usr/local/bin/docker" ]; then
+            DOCKER_CMD="/usr/local/bin/docker"
+          else
+            echo "ERROR: Docker not found. Installing Docker..."
+            # Install Docker if not found
+            curl -fsSL https://get.docker.com -o get-docker.sh
+            sh get-docker.sh
+            rm get-docker.sh
+            DOCKER_CMD="docker"
+            # Add current user to docker group (may require logout/login)
+            sudo usermod -aG docker $USER || true
+          fi
           
-          echo "Pulling latest image"
-          docker pull ghcr.io/${IMAGE_NAME}:latest
+          echo "Docker command: $DOCKER_CMD"
+          $DOCKER_CMD --version
           
-          echo "Stopping and removing old container"
-          docker stop app-container || true
-          docker rm app-container || true
+          # Use sudo if needed
+          if ! $DOCKER_CMD ps &> /dev/null; then
+            echo "Docker requires sudo, using sudo..."
+            DOCKER_CMD="sudo $DOCKER_CMD"
+          fi
           
-          echo "Starting new container"
-          docker run -d --name app-container -p 8000:8000 \
+          echo "=== Logging in to GitHub Container Registry ==="
+          echo ${GITHUB_TOKEN} | $DOCKER_CMD login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+          
+          echo "=== Pulling latest image ==="
+          $DOCKER_CMD pull ghcr.io/${IMAGE_NAME}:latest
+          
+          echo "=== Stopping and removing old container ==="
+          $DOCKER_CMD stop app-container || true
+          $DOCKER_CMD rm app-container || true
+          
+          echo "=== Starting new container ==="
+          $DOCKER_CMD run -d --name app-container -p 8000:8000 \
             --restart unless-stopped \
             -e AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
             -e AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
             -e S3_BUCKET=${{ secrets.S3_BUCKET }} \
             ghcr.io/${IMAGE_NAME}:latest
           
-          echo "Cleaning up old images"
-          docker image prune -f
+          echo "=== Cleaning up old images ==="
+          $DOCKER_CMD image prune -f
+          
+          echo "=== Container status ==="
+          $DOCKER_CMD ps -a | grep app-container || true
