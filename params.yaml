@@ -1,0 +1,8 @@
+# DVC Pipeline Parameters
+
+train:
+  epochs: 5
+  model: yolo11n
+  batch_size: 16
+  imgsz: 640
+  patience: 5

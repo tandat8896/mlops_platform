@@ -19,6 +19,7 @@ htmlcov/
 .env.dvc
 .vscode/
 .idea/
+test/
 *.weights
 *.pt
 runs/

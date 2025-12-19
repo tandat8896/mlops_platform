@@ -2,5 +2,5 @@
     remote = s3
     autostage = true
 ['remote "s3"']
-    url = s3://s3-cicd-1-demo/dvc-storage/ 
-    region = us-east-1
+    url = s3://s3-cicd-1-demo/dvc-storage/
+    region = ap-southeast-1

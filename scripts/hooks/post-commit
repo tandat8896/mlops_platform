@@ -1,0 +1,68 @@
+#!/bin/bash
+# Post-commit hook to trigger Jenkins when DVC data files change
+# Install this hook: cp scripts/hooks/post-commit .git/hooks/post-commit && chmod +x .git/hooks/post-commit
+
+# Configuration
+JENKINS_URL="${JENKINS_URL:-http://localhost:8081}"
+JENKINS_TOKEN="${JENKINS_TOKEN:-dvc-data-change-trigger}"
+JENKINS_USER="${JENKINS_USER:-admin}"
+JENKINS_API_TOKEN="${JENKINS_API_TOKEN:-your-api-token}"
+
+# Get the list of changed files in the last commit
+CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
+
+# Check if any DVC-tracked data files changed
+DATA_CHANGED="false"
+if echo "$CHANGED_FILES" | grep -qE "^data/.*\.(dvc|yaml)$|^data\.dvc$|^\.dvc/"; then
+    DATA_CHANGED="true"
+    echo "📊 DVC data changes detected!"
+fi
+
+# Also check for params.yaml changes (training parameters)
+if echo "$CHANGED_FILES" | grep -q "params.yaml"; then
+    DATA_CHANGED="true"
+    echo "⚙️ Training parameters changed!"
+fi
+
+if [ "$DATA_CHANGED" = "true" ]; then
+    echo "🚀 Triggering Jenkins pipeline..."
+    
+    # Get commit information
+    COMMIT_SHA=$(git rev-parse HEAD)
+    COMMIT_MESSAGE=$(git log -1 --pretty=%B | head -1)
+    BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    
+    # Prepare webhook payload
+    PAYLOAD=$(cat <<EOF
+{
+    "ref": "refs/heads/${BRANCH}",
+    "data_changed": "true",
+    "commits": [
+        {
+            "id": "${COMMIT_SHA}",
+            "message": "${COMMIT_MESSAGE}"
+        }
+    ],
+    "repository": {
+        "full_name": "ThuanNaN/aio2025-mlops-cicd"
+    }
+}
+EOF
+)
+    
+    # Trigger Jenkins Generic Webhook
+    RESPONSE=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -H "token: ${JENKINS_TOKEN}" \
+        -d "${PAYLOAD}" \
+        "${JENKINS_URL}/generic-webhook-trigger/invoke" 2>&1)
+    
+    if echo "$RESPONSE" | grep -q "triggered"; then
+        echo "✅ Jenkins pipeline triggered successfully!"
+    else
+        echo "⚠️ Jenkins trigger response: $RESPONSE"
+        echo "Make sure Jenkins is running and the Generic Webhook Trigger plugin is installed"
+    fi
+else
+    echo "ℹ️ No DVC data changes detected, skipping Jenkins trigger"
+fi
