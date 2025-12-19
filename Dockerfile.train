@@ -1,0 +1,36 @@
+# Dockerfile for Training
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies for OpenCV
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies (CPU-only PyTorch for training)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio && \
+    pip install --no-cache-dir -r <(grep -v "^torch" requirements.txt) && \
+    pip cache purge
+
+# Copy training code
+COPY train.py .
+COPY dvc.yaml .
+COPY params.yaml .
+COPY data/ ./data/
+COPY checkpoints/ ./checkpoints/ 2>/dev/null || mkdir -p checkpoints
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV MLFLOW_TRACKING_URI=""
+
+# Default command
+CMD ["python", "train.py", "--epochs", "5", "--model", "yolo11n", "--batch-size", "16"]
+

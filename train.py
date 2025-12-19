@@ -374,46 +374,84 @@ def register_model_to_mlflow(
     
     logger.info(f"Model registered: {model_name} v{result.version}")
     
-    # Check if should promote to production (compare with previous best)
+    # Check if should promote to production
+    # Promote if: mAP > 0.75 OR improvement >= threshold
     current_map = test_metrics["mAP50-95"]
-    should_promote = True
+    MAP_THRESHOLD = 0.75
+    should_promote = False
     previous_map = None
     improvement = None
+    promotion_reason = ""
     
-    logger.info(f"\nPromotion threshold: {promotion_threshold:.4f} (model must improve by at least this amount)")
+    logger.info(f"\nPromotion Criteria:")
+    logger.info(f"  Option 1: mAP@50-95 > {MAP_THRESHOLD:.2f} (absolute threshold)")
+    logger.info(f"  Option 2: Improvement >= {promotion_threshold:.4f} compared to production")
     
-    try:
-        # Get production model's metrics if exists
-        prod_version = client.get_model_version_by_alias(model_name, "production")
-        if prod_version and prod_version.version != result.version:
-            prod_run = client.get_run(prod_version.run_id)
-            previous_map = prod_run.data.metrics.get("test_mAP50-95", 0.0)
-            improvement = current_map - previous_map
-            
-            logger.info(f"\nComparing with production model:")
-            logger.info(f"  Current model mAP@50-95: {current_map:.4f}")
-            logger.info(f"  Production model mAP@50-95: {previous_map:.4f}")
-            logger.info(f"  Improvement: {improvement:+.4f}")
-            logger.info(f"  Required improvement: >= {promotion_threshold:.4f}")
-            
-            if previous_map >= current_map:
-                should_promote = False
-                logger.info(f"  → Production model is better or equal, NOT promoting")
-            elif improvement < promotion_threshold:
-                should_promote = False
-                logger.info(f"  → Improvement ({improvement:.4f}) < threshold ({promotion_threshold:.4f}), NOT promoting")
+    # Check absolute threshold first
+    if current_map > MAP_THRESHOLD:
+        should_promote = True
+        promotion_reason = f"mAP@50-95 ({current_map:.4f}) > {MAP_THRESHOLD:.2f}"
+        logger.info(f"\n Promotion criteria met: {promotion_reason}")
+    else:
+        logger.info(f"\n  Current mAP@50-95 ({current_map:.4f}) <= {MAP_THRESHOLD:.2f}, checking improvement...")
+        
+        # Check relative improvement if absolute threshold not met
+        try:
+            # Get production model's metrics if exists
+            prod_version = client.get_model_version_by_alias(model_name, "production")
+            if prod_version and prod_version.version != result.version:
+                prod_run = client.get_run(prod_version.run_id)
+                previous_map = prod_run.data.metrics.get("test_mAP50-95", 0.0)
+                improvement = current_map - previous_map
+                
+                logger.info(f"\nComparing with production model:")
+                logger.info(f"  Current model mAP@50-95: {current_map:.4f}")
+                logger.info(f"  Production model mAP@50-95: {previous_map:.4f}")
+                logger.info(f"  Improvement: {improvement:+.4f}")
+                logger.info(f"  Required improvement: >= {promotion_threshold:.4f}")
+                
+                if previous_map >= current_map:
+                    should_promote = False
+                    promotion_reason = f"Production model is better ({previous_map:.4f} >= {current_map:.4f})"
+                    logger.info(f"  → {promotion_reason}, NOT promoting")
+                elif improvement >= promotion_threshold:
+                    should_promote = True
+                    promotion_reason = f"Improvement ({improvement:.4f}) >= threshold ({promotion_threshold:.4f})"
+                    logger.info(f"  →  {promotion_reason}, WILL promote")
+                else:
+                    should_promote = False
+                    promotion_reason = f"Improvement ({improvement:.4f}) < threshold ({promotion_threshold:.4f})"
+                    logger.info(f"  → {promotion_reason}, NOT promoting")
             else:
-                logger.info(f"  → Improvement ({improvement:.4f}) >= threshold ({promotion_threshold:.4f}), WILL promote")
-        else:
-            logger.info(f"\nNo existing production model found - will promote to production")
-    except Exception:
-        logger.info(f"\nNo existing production model found - will promote to production")
-        pass  # No production model exists yet
+                # No production model exists - promote if mAP > 0.5 (reasonable baseline)
+                if current_map > 0.5:
+                    should_promote = True
+                    promotion_reason = f"No production model exists, current mAP ({current_map:.4f}) > 0.5"
+                    logger.info(f"\n {promotion_reason}")
+                else:
+                    should_promote = False
+                    promotion_reason = f"No production model exists, but mAP ({current_map:.4f}) too low"
+                    logger.info(f"\nℹ {promotion_reason}")
+        except Exception as e:
+            logger.warning(f"\nCould not check production model: {e}")
+            # If can't check, promote if mAP > 0.5
+            if current_map > 0.5:
+                should_promote = True
+                promotion_reason = f"Could not check production model, current mAP ({current_map:.4f}) > 0.5"
+                logger.info(f" {promotion_reason}")
+            else:
+                should_promote = False
+                promotion_reason = f"Could not check production model, mAP ({current_map:.4f}) too low"
+                logger.info(f" {promotion_reason}")
     
     # Set production alias if best model
     if should_promote:
         client.set_registered_model_alias(model_name, "production", result.version)
         logger.info(f"\n✅ Model v{result.version} PROMOTED TO PRODUCTION")
+        logger.info(f"   Reason: {promotion_reason}")
+        logger.info(f"   Current mAP@50-95: {current_map:.4f}")
+        if previous_map is not None:
+            logger.info(f"   Previous production mAP@50-95: {previous_map:.4f}")
         s3_bucket = os.getenv("S3_BUCKET", "").rstrip('/')
         if s3_bucket:
             _upload_model_to_s3(
@@ -425,6 +463,10 @@ def register_model_to_mlflow(
             logger.warning("S3_BUCKET not set, skipping S3 upload")
     else:
         logger.info(f"\nℹ Model v{result.version} registered but NOT promoted to production")
+        logger.info(f"   Reason: {promotion_reason}")
+        logger.info(f"   Current mAP@50-95: {current_map:.4f}")
+        if previous_map is not None:
+            logger.info(f"   Production mAP@50-95: {previous_map:.4f}")
     
     return {
         "model_uri": f"models:/{model_name}/{result.version}",
@@ -432,7 +474,9 @@ def register_model_to_mlflow(
         "version": result.version,
         "previous_map": previous_map,
         "improvement": improvement,
-        "threshold": promotion_threshold
+        "threshold": promotion_threshold,
+        "promotion_reason": promotion_reason,
+        "current_map": current_map
     }
 
 
@@ -601,16 +645,19 @@ if __name__ == "__main__":
         logger.info("")
         if registration_result['promoted']:
             logger.info(f"✅ PROMOTED TO PRODUCTION!")
+            logger.info(f"   Reason: {registration_result.get('promotion_reason', 'N/A')}")
             logger.info(f"   Current mAP@50-95: {test_metrics['mAP50-95']:.4f}")
             if registration_result.get('previous_map') is not None:
                 logger.info(f"   Previous production mAP@50-95: {registration_result['previous_map']:.4f}")
-                logger.info(f"   Improvement: {registration_result.get('improvement', 0):+.4f}")
+                if registration_result.get('improvement') is not None:
+                    logger.info(f"   Improvement: {registration_result['improvement']:+.4f}")
         else:
             logger.info(f"ℹ Model registered but NOT promoted to production")
+            logger.info(f"   Reason: {registration_result.get('promotion_reason', 'N/A')}")
+            logger.info(f"   Current mAP@50-95: {test_metrics['mAP50-95']:.4f}")
             if registration_result.get('previous_map') is not None:
-                logger.info(f"   Current mAP@50-95: {test_metrics['mAP50-95']:.4f}")
                 logger.info(f"   Production mAP@50-95: {registration_result['previous_map']:.4f}")
-                improvement = registration_result.get('improvement', 0)
+                improvement = registration_result.get('improvement')
                 threshold = registration_result.get('threshold', 0.6)
                 if improvement is not None:
                     logger.info(f"   Improvement: {improvement:+.4f}")
@@ -621,6 +668,7 @@ if __name__ == "__main__":
                         logger.info(f"   → Production model is better or equal")
             else:
                 logger.info(f"   → No production model to compare")
+                logger.info(f"   → Need mAP > 0.75 to promote (current: {test_metrics['mAP50-95']:.4f})")
         logger.info("=" * 50)
         sys.stdout.flush()  # Ensure logs are visible in CI/CD
         

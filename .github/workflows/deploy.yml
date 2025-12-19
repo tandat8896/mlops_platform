@@ -17,9 +17,32 @@ jobs:
   train_on_server:
     name: Train Model on Remote Server
     runs-on: ubuntu-latest
+    outputs:
+      promoted: ${{ steps.check_promotion.outputs.promoted }}
 
     steps:
-    - name: SSH and run training
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build training Docker image
+      run: |
+        docker build -f Dockerfile.train -t mlops-train:latest .
+
+    - name: Save training image
+      run: |
+        docker save mlops-train:latest | gzip > train-image.tar.gz
+
+    - name: Upload training image to EC2
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_KEY }}
+        port: ${{ secrets.EC2_PORT_SSH }}
+        source: "train-image.tar.gz"
+        target: "/tmp/"
+
+    - name: SSH and run training in Docker
       uses: appleboy/ssh-action@v1.1.0
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -31,376 +54,91 @@ jobs:
         port: ${{ secrets.EC2_PORT_SSH }}
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
         script: |
-          echo "=== Setting up environment ==="
-          
-          echo "=== Setup PATH ==="
-          export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-          
-          echo "=== Check and Install Git ==="
-          if ! command -v git &> /dev/null; then
-            echo "Git not found, installing..."
-            if command -v apt-get &> /dev/null; then
-              sudo apt-get update && sudo apt-get install -y git
-            elif command -v yum &> /dev/null; then
-              sudo yum install -y git
-            else
-              echo "Cannot install git automatically. Please install git manually."
-              exit 1
-            fi
-          fi
-          echo "Git version: $(git --version)"
-          
-          # Set repository directory
+          echo "=== Setup Repository ==="
           REPO_DIR="$HOME/Repository/mlops_platform"
+          mkdir -p "$REPO_DIR"
+          cd "$REPO_DIR" || exit 1
           
-          echo "Repository directory: $REPO_DIR"
-          
-          # Clone repository if it doesn't exist
-          if [ ! -d "$REPO_DIR" ]; then
-            echo "Repository not found, cloning..."
-            mkdir -p "$HOME/Repository"
-            cd "$HOME/Repository"
-            git clone https://github.com/tandat8896/mlops_platform.git
-            if [ $? -ne 0 ]; then
-              echo "Failed to clone repository"
-              exit 1
-            fi
-          fi
-          
-          cd "$REPO_DIR" || { echo "Failed to cd to $REPO_DIR"; exit 1; }
-          
-          echo "=== Find and Setup Conda ==="
-          # Try to find conda in multiple locations (prioritize miniconda3)
-          CONDA_PATHS=(
-            "$HOME/miniconda3"
-            "$HOME/anaconda3"
-            "/opt/conda"
-            "/usr/local/miniconda3"
-            "/usr/local/anaconda3"
-            "/home/ec2-user/miniconda3"
-            "/home/ubuntu/miniconda3"
-            "/home/$USER/miniconda3"
-          )
-          
-          CONDA_FOUND=false
-          CONDA_PATH=""
-          
-          # First check standard locations
-          echo "Searching for conda..."
-          for path in "${CONDA_PATHS[@]}"; do
-            if [ -f "$path/etc/profile.d/conda.sh" ]; then
-              echo "Found conda at: $path"
-              CONDA_PATH="$path"
-              CONDA_FOUND=true
-              break
-            elif [ -d "$path" ]; then
-              echo "Found conda directory at: $path (checking for conda.sh...)"
-              if [ -f "$path/etc/profile.d/conda.sh" ]; then
-                CONDA_PATH="$path"
-                CONDA_FOUND=true
-                break
-              fi
-            fi
-          done
-          
-          # If not found, check PATH and ~/.bashrc
-          if [ "$CONDA_FOUND" = false ]; then
-            echo "Checking PATH for conda..."
-            if command -v conda &> /dev/null; then
-              echo "Conda found in PATH: $(which conda)"
-              CONDA_FOUND=true
-              # Try to get conda path from conda info
-              CONDA_PATH=$(conda info --base 2>/dev/null || echo "")
-              echo "Conda base: $CONDA_PATH"
-            else
-              # Check ~/.bashrc for conda initialization
-              echo "Checking ~/.bashrc for conda..."
-              if [ -f "$HOME/.bashrc" ] && grep -q "conda" "$HOME/.bashrc"; then
-                echo "Found conda reference in .bashrc, sourcing it..."
-                source "$HOME/.bashrc" 2>/dev/null || true
-                if command -v conda &> /dev/null; then
-                  CONDA_FOUND=true
-                  CONDA_PATH=$(conda info --base 2>/dev/null || echo "$HOME/miniconda3")
-                fi
-              fi
-            fi
-          fi
-          
-          if [ "$CONDA_FOUND" = true ]; then
-            echo "Initializing conda..."
-            # Source conda.sh
-            if [ -n "$CONDA_PATH" ] && [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
-              echo "Sourcing conda.sh from: $CONDA_PATH"
-              source "$CONDA_PATH/etc/profile.d/conda.sh"
-            elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-              echo "Sourcing conda.sh from: $HOME/miniconda3"
-              source "$HOME/miniconda3/etc/profile.d/conda.sh"
-            elif command -v conda &> /dev/null; then
-              echo "Conda already in PATH, initializing..."
-              eval "$(conda shell.bash hook)" 2>/dev/null || true
-            fi
-            
-            # Verify conda is available
-            if command -v conda &> /dev/null; then
-              echo "Conda initialized successfully"
-              conda --version
-              
-              # Try to activate environment
-              if conda env list 2>/dev/null | grep -q "mlops-cicd"; then
-                echo "Activating conda environment: mlops-cicd"
-                conda activate mlops-cicd
-              else
-                echo "Creating conda environment: mlops-cicd"
-                conda create -n mlops-cicd python=3.11 -y
-                conda activate mlops-cicd
-              fi
-              
-              echo "Conda environment: $CONDA_DEFAULT_ENV"
-              echo "Python: $(which python)"
-              echo "Pip: $(which pip)"
-              # Add conda bin to PATH
-              export PATH="$CONDA_PREFIX/bin:$PATH"
-            else
-              echo "WARNING: Conda path found but conda command not available"
-              CONDA_FOUND=false
-            fi
+          # Clone/pull code
+          if [ ! -d ".git" ]; then
+            git clone https://github.com/tandat8896/mlops_platform.git .
           else
-            echo "Conda not found in any location, will use virtual environment instead"
-            echo "Searched paths: ${CONDA_PATHS[*]}"
+            git pull origin master || git pull origin main
           fi
           
-          echo "Current PATH: $PATH"
+          echo "=== Load Training Docker Image ==="
+          docker load < /tmp/train-image.tar.gz
+          rm -f /tmp/train-image.tar.gz
           
-          echo "=== Pull latest code ==="
-          # Ensure remote is set correctly
-          git remote set-url origin https://github.com/tandat8896/mlops_platform.git || git remote add origin https://github.com/tandat8896/mlops_platform.git
-          git pull origin master || git pull origin main
-          
-          echo "=== Check if data.dvc changed ==="
-          DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
-          echo "Data changed: $DATA_CHANGED"
-          
-          echo "=== Setup Python Environment ==="
-          # Use conda if available, otherwise use existing venv
-          if [ "$CONDA_FOUND" = true ]; then
-            echo "Using conda environment"
-            PYTHON_ENV="conda"
-            # Verify conda environment is activated
-            if [ -n "$CONDA_DEFAULT_ENV" ]; then
-              echo "Conda environment: $CONDA_DEFAULT_ENV"
-            fi
-          else
-            # Try to use existing venv or conda environment
-            VENV_DIR="$REPO_DIR/.venv"
-            VENV_HOME="$HOME/venv-mlops"
-            
-            if [ -f "$VENV_DIR/bin/activate" ]; then
-              echo "Using existing venv at: $VENV_DIR"
-              source "$VENV_DIR/bin/activate"
-            elif [ -f "$VENV_HOME/bin/activate" ]; then
-              echo "Using existing venv at: $VENV_HOME"
-              source "$VENV_HOME/bin/activate"
-            else
-              echo "ERROR: No Python environment found!"
-              echo "Please setup environment on EC2 first:"
-              echo "  conda create -n mlops-cicd python=3.11 -y"
-              echo "  conda activate mlops-cicd"
-              echo "  conda install -y -c conda-forge dvc dvc-s3"
-              echo "  pip install -r requirements.txt"
-              exit 1
-            fi
-            
-            PYTHON_ENV="venv"
-            echo "Python environment activated: $VIRTUAL_ENV"
-            echo "Python: $(which python)"
-            echo "Pip: $(which pip)"
-          fi
-          
-          echo "=== Aggressive Cleanup to Free Space ==="
-          # Check disk space before cleanup
-          echo "Disk space BEFORE cleanup:"
-          df -h $HOME 2>/dev/null || df -h / 2>/dev/null || true
-          
-          # Clean pip cache
-          echo "Cleaning pip cache..."
-          pip cache purge 2>/dev/null || true
-          rm -rf ~/.cache/pip 2>/dev/null || true
-          
-          # Clean conda cache if using conda
-          if [ "$PYTHON_ENV" = "conda" ]; then
-            echo "Cleaning conda cache..."
-            conda clean --all -y 2>/dev/null || true
-          fi
-          
-          # Clean system package cache (if on Ubuntu/Debian)
-          if command -v apt-get &> /dev/null; then
-            echo "Cleaning apt cache..."
-            sudo apt-get clean 2>/dev/null || true
-            sudo rm -rf /var/lib/apt/lists/* 2>/dev/null || true
-          fi
-          
-          # Clean temporary files
-          echo "Cleaning temporary files..."
-          rm -rf /tmp/* 2>/dev/null || true
-          rm -rf /var/tmp/* 2>/dev/null || true
-          find $HOME -name "*.pyc" -delete 2>/dev/null || true
-          find $HOME -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-          
-          # Clean old logs
-          echo "Cleaning old logs..."
-          find $HOME -name "*.log" -mtime +7 -delete 2>/dev/null || true
-          
-          # Check disk space after cleanup
-          echo "Disk space AFTER cleanup:"
-          df -h $HOME 2>/dev/null || df -h / 2>/dev/null || true
-          
-          echo "=== Complete Setup: System + Python Dependencies ==="
-          
-          # Step 1: Install system dependencies for OpenCV (REQUIRED)
-          echo "Step 1/3: Installing system dependencies for OpenCV..."
-          if command -v apt-get &> /dev/null; then
-            sudo apt-get update -qq
-            
-            # Try libgl1 first (Ubuntu 22.04+), fallback to libgl1-mesa-glx (older versions)
-            echo "Trying libgl1 (Ubuntu 22.04+)..."
-            if sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libgomp1 2>/dev/null; then
-              echo "✓ Installed libgl1 successfully"
-            else
-              echo "libgl1 failed, trying libgl1-mesa-glx (Ubuntu < 22.04)..."
-              sudo apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 libgomp1 || {
-                echo "ERROR: Failed to install system dependencies"
-                exit 1
-              }
-            fi
-          elif command -v yum &> /dev/null; then
-            sudo yum install -y mesa-libGL glib2 libgomp || {
-              echo "ERROR: Failed to install system dependencies"
-              exit 1
-            }
-          else
-            echo "WARNING: Cannot detect package manager, trying to continue..."
-          fi
-          
-          # Step 2: Check if dependencies already installed
-          echo "Step 2/3: Checking existing dependencies..."
-          DEPS_OK=true
-          python -c "import torch; import cv2; import ultralytics" 2>/dev/null || DEPS_OK=false
-          
-          if [ "$DEPS_OK" = "true" ]; then
-            echo "✓ All dependencies already installed!"
-            python -c "import torch; print(f'PyTorch: {torch.__version__}')" 2>/dev/null || true
-            python -c "import cv2; print(f'OpenCV: {cv2.__version__}')" 2>/dev/null || true
-          else
-            echo "Step 3/3: Installing Python dependencies..."
-            
-            # Detect GPU
-            if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null 2>&1; then
-              echo "GPU detected - installing PyTorch with CUDA..."
-              PYTORCH_CMD="pip install --no-cache-dir torch torchvision torchaudio"
-            else
-              echo "No GPU - installing CPU-only PyTorch (~200MB vs ~2GB)..."
-              PYTORCH_CMD="pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio"
-            fi
-            
-            # Install PyTorch first
-            echo "Installing PyTorch..."
-            $PYTORCH_CMD || {
-              echo "ERROR: Failed to install PyTorch"
-              exit 1
-            }
-            
-            # Install other dependencies (excluding torch from requirements.txt)
-            echo "Installing other dependencies..."
-            grep -v "^torch" requirements.txt > /tmp/req_no_torch.txt
-            pip install --no-cache-dir -r /tmp/req_no_torch.txt || {
-              echo "ERROR: Failed to install dependencies"
-              rm -f /tmp/req_no_torch.txt
-              exit 1
-            }
-            rm -f /tmp/req_no_torch.txt
-            
-            # Verify installation
-            echo "Verifying installation..."
-            python -c "import torch; import cv2; import ultralytics; print('✓ All imports successful!')" || {
-              echo "ERROR: Import verification failed"
-              exit 1
-            }
-            
-            # Cleanup
-            pip cache purge 2>/dev/null || true
-            echo "✓ Dependencies installed successfully!"
-          fi
-          
-          echo "=== Check and Install DVC ==="
+          echo "=== Pull DVC Data ==="
+          # Install DVC if needed (minimal install)
           if ! command -v dvc &> /dev/null; then
-            echo "DVC not found, installing DVC only..."
-            
-            if [ "$PYTHON_ENV" = "conda" ]; then
-              # Install using conda (preferred, faster and uses less space)
-              echo "Installing DVC via conda..."
-              conda install -y -c conda-forge dvc dvc-s3 || {
-                echo "Conda install failed, trying pip..."
-                pip install --no-cache-dir dvc[s3]
-              }
-            else
-              # Install only DVC, not entire requirements.txt
-              echo "Installing DVC via pip..."
-              pip install --no-cache-dir dvc[s3]
-            fi
-          else
-            echo "DVC already installed: $(which dvc)"
+            pip3 install --user dvc[s3] || pip install --user dvc[s3]
           fi
+          export PATH="$HOME/.local/bin:$PATH"
+          dvc pull || echo "DVC pull failed, continuing..."
           
-          # Verify DVC installation
-          if command -v dvc &> /dev/null; then
-            echo "DVC found: $(which dvc)"
-            dvc --version
-          else
-            echo "ERROR: DVC still not found after installation attempt"
-            echo "Please install DVC manually on EC2:"
-            echo "  conda install -y -c conda-forge dvc dvc-s3"
-            echo "  OR: pip install dvc[s3]"
-            exit 1
-          fi
-          
-          echo "=== Pull latest DVC data ==="
-          dvc pull
-          
-          echo "=== Run DVC pipeline ==="
-          # Set Python unbuffered to see logs in real-time
+          echo "=== Run Training in Docker ==="
           export PYTHONUNBUFFERED=1
+          docker run --rm \
+            -v "$REPO_DIR:/app" \
+            -v "$HOME/.aws:/root/.aws:ro" \
+            -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+            -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+            -e S3_BUCKET="s3-cicd-1-demo" \
+            -e MLFLOW_TRACKING_URI="" \
+            mlops-train:latest \
+            python train.py --epochs 5 --model yolo11n --batch-size 16 2>&1 | tee /tmp/training.log
           
-          if [ "$DATA_CHANGED" = "true" ]; then
-            echo "Data changed detected - forcing training"
-            echo "Starting training with verbose output..."
-            # Run dvc repro with verbose output and capture logs
-            dvc repro --force -v 2>&1 | tee /tmp/dvc_training.log || {
-              echo "=== Training failed, showing last 100 lines of log ==="
-              tail -n 100 /tmp/dvc_training.log || true
-              exit 1
-            }
-          else
-            echo "No data changes - running regular pipeline"
-            dvc repro -v 2>&1 | tee /tmp/dvc_training.log || {
-              echo "=== Training failed, showing last 100 lines of log ==="
-              tail -n 100 /tmp/dvc_training.log || true
-              exit 1
-            }
+          TRAIN_EXIT_CODE=${PIPESTATUS[0]}
+          if [ $TRAIN_EXIT_CODE -ne 0 ]; then
+            echo "=== Training failed ==="
+            tail -n 100 /tmp/training.log
+            exit $TRAIN_EXIT_CODE
           fi
           
           echo ""
           echo "=== Training Summary ==="
-          echo "Showing key training metrics from logs..."
-          grep -E "(mAP|Precision|Recall|Epoch|best|results)" /tmp/dvc_training.log | tail -n 50 || echo "No metrics found in logs"
+          grep -E "(mAP|Precision|Recall|PROMOTED|promoted)" /tmp/training.log | tail -n 30 || true
           
           echo ""
-          echo "=== Push artifacts back to DVC remote ==="
-          dvc push
+          echo "=== Check Promotion Status ==="
+          if grep -q "PROMOTED TO PRODUCTION" /tmp/training.log; then
+            echo " Model PROMOTED - will build and deploy"
+            echo "true" > /tmp/model_promoted.txt
+          else
+            echo "Model NOT promoted - skipping deploy"
+            echo "false" > /tmp/model_promoted.txt
+          fi
+          cat /tmp/model_promoted.txt
+          
+          echo ""
+          echo "=== Push DVC artifacts ==="
+          dvc push || echo "DVC push failed, continuing..."
+
+    - name: Check promotion status
+      id: check_promotion
+      uses: appleboy/ssh-action@v1.1.0
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_KEY }}
+        port: ${{ secrets.EC2_PORT_SSH }}
+        script: |
+          if [ -f /tmp/model_promoted.txt ]; then
+            PROMOTED=$(cat /tmp/model_promoted.txt)
+            echo "promoted=$PROMOTED" >> $GITHUB_OUTPUT
+            echo "Promotion status: $PROMOTED"
+          else
+            echo "promoted=false" >> $GITHUB_OUTPUT
+            echo "Promotion status: false (file not found)"
+          fi
 
   build_and_push:
     name: Build Docker image & Push GHCR
     needs: train_on_server
     runs-on: ubuntu-latest
+    if: needs.train_on_server.outputs.promoted == 'true'
     outputs:
       image_name: ${{ steps.image.outputs.value }}
 
