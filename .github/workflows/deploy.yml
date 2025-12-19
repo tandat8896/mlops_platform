@@ -17,6 +17,8 @@ jobs:
   train_on_server:
     name: Train Model on Remote Server
     runs-on: ubuntu-latest
+    outputs:
+      promoted: ${{ steps.check_promotion.outputs.promoted }}
 
     steps:
     - name: SSH and run training
@@ -85,25 +87,97 @@ jobs:
             pip install --no-cache-dir dvc[s3]
           fi
           
+          echo "=== Start MLflow Server ==="
+          # Check if MLflow is installed
+          if ! python -c "import mlflow" 2>/dev/null; then
+            echo "Installing MLflow..."
+            pip install --no-cache-dir mlflow==3.7.0
+          fi
+          
+          # Create MLflow data directory
+          mkdir -p mlflow/run_env/data
+          cd mlflow/run_env/data
+          
+          # Check if MLflow server is already running
+          if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
+            echo "✓ MLflow server already running"
+          else
+            echo "Starting MLflow server in background..."
+            # Kill any existing MLflow process
+            pkill -f "mlflow server" 2>/dev/null || true
+            sleep 2
+            
+            # Start MLflow server
+            nohup python -m mlflow server \
+              --backend-store-uri sqlite:///./mlflow.db \
+              --serve-artifacts \
+              --host 0.0.0.0 \
+              --port 5001 \
+              > /tmp/mlflow.log 2>&1 &
+            
+            echo "Waiting for MLflow server to start..."
+            sleep 5
+            for i in {1..20}; do
+              if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
+                echo "✓ MLflow server is ready!"
+                break
+              fi
+              sleep 2
+            done
+          fi
+          
+          cd $HOME/Repository/mlops_platform
+          export MLFLOW_TRACKING_URI="http://localhost:5001"
+          echo "MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI"
+          
           echo "=== Pull latest DVC data ==="
           dvc pull
           
           echo "=== Run DVC pipeline ==="
           if [ "$DATA_CHANGED" = "true" ]; then
             echo "Data changed detected - forcing training"
-            dvc repro --force
+            dvc repro --force 2>&1 | tee /tmp/dvc_training.log
           else
             echo "No data changes - running regular pipeline"
-            dvc repro
+            dvc repro 2>&1 | tee /tmp/dvc_training.log
           fi
           
           echo "=== Push artifacts back to DVC remote ==="
           dvc push
+          
+          echo "=== Check promotion status ==="
+          if grep -q "Model promoted to production" /tmp/dvc_training.log 2>/dev/null || \
+             grep -q "✅ Model promoted to production" /tmp/dvc_training.log 2>/dev/null || \
+             grep -q "PROMOTED TO PRODUCTION" /tmp/dvc_training.log 2>/dev/null; then
+            echo "✅ Model was PROMOTED to production - will build and deploy"
+            echo "true" > /tmp/model_promoted.txt
+          else
+            echo "ℹ️ Model was NOT promoted - skipping build and deploy"
+            echo "false" > /tmp/model_promoted.txt
+          fi
+          cat /tmp/model_promoted.txt
+
+    - name: Check promotion status
+      id: check_promotion
+      uses: appleboy/ssh-action@v1.1.0
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_KEY }}
+        port: ${{ secrets.EC2_PORT_SSH }}
+        script: |
+          if [ -f /tmp/model_promoted.txt ]; then
+            cat /tmp/model_promoted.txt
+          else
+            echo "false"
+          fi
+      continue-on-error: true
 
   build_and_push:
     name: Build Docker image & Push GHCR
     needs: train_on_server
     runs-on: ubuntu-latest
+    if: needs.train_on_server.outputs.promoted == 'true'
     outputs:
       image_name: ${{ steps.image.outputs.value }}
 
