@@ -1,0 +1,75 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.dvc
+
+# Data and models (will be downloaded from S3)
+data/
+runs/
+mlruns/
+*.pt
+*.weights
+*.db
+*.cache
+
+# DVC
+.dvc/
+*.dvc
+*.dvc.lock
+data.dvc
+
+# Tests
+test/
+tests/
+*.test.py
+
+# Documentation
+README.md
+*.md
+
+# Scripts
+scripts/
+download_ckpt.sh
+debug_dvc_push.sh
+
+# MLflow
+mlflow/
+
+# Other
+.DS_Store
+uv.lock
+pyproject.toml
+.python-version
+
