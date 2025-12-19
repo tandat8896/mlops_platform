@@ -32,28 +32,58 @@ jobs:
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
         script: |
           echo "=== Setting up environment ==="
-          # Create directory structure if it doesn't exist
-          mkdir -p $HOME/Repository
-          cd $HOME/Repository
+          echo "User: $(whoami)"
+          echo "Home: $HOME"
+          echo "PWD: $(pwd)"
           
-          # Clone repo if it doesn't exist
-          if [ ! -d "mlops_platform" ]; then
-            echo "Repository not found, cloning..."
-            git clone https://github.com/tandat8896/mlops_platform.git
-          fi
-          
-          cd mlops_platform
+          cd $HOME/Repository/mlops_platform
           
           echo "=== Pull latest code ==="
+          git stash || true
           git pull
           
           echo "=== Check if data.dvc changed ==="
-          DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only | grep -q "data.dvc" && echo "true" || echo "false")
+          DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
           echo "Data changed: $DATA_CHANGED"
           
           echo "=== Initialize Conda ==="
-          source ~/miniconda3/bin/activate
-          conda activate mlops-cicd
+          echo "Checking conda locations..."
+          if [ -f "$HOME/miniconda3/bin/activate" ]; then
+            echo "Found: $HOME/miniconda3/bin/activate"
+            source "$HOME/miniconda3/bin/activate"
+          elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+            echo "Found: $HOME/miniconda3/etc/profile.d/conda.sh"
+            source "$HOME/miniconda3/etc/profile.d/conda.sh"
+          elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+            echo "Found: $HOME/anaconda3/etc/profile.d/conda.sh"
+            source "$HOME/anaconda3/etc/profile.d/conda.sh"
+          elif command -v conda &> /dev/null; then
+            echo "Found conda in PATH: $(which conda)"
+            eval "$(conda shell.bash hook)" 2>/dev/null || true
+          else
+            echo "Conda not found in standard locations"
+            echo "Trying venv..."
+            if [ -f ".venv/bin/activate" ]; then
+              source .venv/bin/activate
+            elif [ -f "$HOME/venv-mlops/bin/activate" ]; then
+              source $HOME/venv-mlops/bin/activate
+            else
+              echo "ERROR: No Python environment found!"
+              exit 1
+            fi
+          fi
+          
+          conda activate mlops-cicd || {
+            echo "Environment mlops-cicd not found, creating..."
+            conda create -n mlops-cicd python=3.11 -y
+            conda activate mlops-cicd
+          }
+          
+          # Install DVC if needed
+          if ! command -v dvc &> /dev/null; then
+            echo "Installing DVC..."
+            pip install --no-cache-dir dvc[s3]
+          fi
           
           echo "=== Pull latest DVC data ==="
           dvc pull
