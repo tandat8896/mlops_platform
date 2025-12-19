@@ -147,6 +147,62 @@ jobs:
           
           echo "DVC version: $(dvc --version 2>/dev/null || echo 'not found')"
           
+          echo "=== Start MLflow Server ==="
+          # Check if Docker is available
+          if ! command -v docker &> /dev/null; then
+            echo "WARNING: Docker not found, MLflow server will not start"
+            echo "Training will continue but MLflow tracking may fail"
+          else
+            # Check if Docker daemon is running
+            if ! docker info > /dev/null 2>&1; then
+              echo "WARNING: Docker daemon not running, MLflow server will not start"
+              echo "Training will continue but MLflow tracking may fail"
+            else
+              # Create MLflow data directory
+              MLFLOW_DATA_DIR="$HOME/Repository/mlops_platform/mlflow/run_env/data"
+              mkdir -p "$MLFLOW_DATA_DIR"
+              
+              # Check if MLflow container is already running
+              if docker ps | grep -q "mlflow_server"; then
+                echo "MLflow server container already running"
+              else
+                echo "Starting MLflow server container..."
+                # Stop and remove old container if exists
+                docker stop mlflow_server 2>/dev/null || true
+                docker rm mlflow_server 2>/dev/null || true
+                
+                # Start MLflow server using Docker
+                docker run -d \
+                  --name mlflow_server \
+                  -p 5001:5000 \
+                  -v "$MLFLOW_DATA_DIR:/mlflow" \
+                  --restart unless-stopped \
+                  python:3.11.9-slim \
+                  bash -c "pip install --no-cache-dir mlflow==3.7.0 && mlflow server --backend-store-uri sqlite:////mlflow/mlflow.db --serve-artifacts --host 0.0.0.0 --port 5000"
+                
+                # Wait for MLflow server to be ready
+                echo "Waiting for MLflow server to start..."
+                MLFLOW_READY=false
+                for i in {1..30}; do
+                  sleep 2
+                  if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
+                    echo "✓ MLflow server is ready!"
+                    MLFLOW_READY=true
+                    break
+                  fi
+                  if [ $i -eq 30 ]; then
+                    echo "WARNING: MLflow server may not be ready after 1 minute"
+                    docker logs mlflow_server --tail 20 || true
+                  fi
+                done
+              fi
+              
+              # Set MLflow tracking URI
+              export MLFLOW_TRACKING_URI="http://localhost:5001"
+              echo "MLFLOW_TRACKING_URI set to: $MLFLOW_TRACKING_URI"
+            fi
+          fi
+          
           echo "=== Pull latest DVC data ==="
           dvc pull
           
