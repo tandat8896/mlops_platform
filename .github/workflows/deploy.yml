@@ -41,9 +41,64 @@ jobs:
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only | grep -q "data.dvc" && echo "true" || echo "false")
           echo "Data changed: $DATA_CHANGED"
           
-          echo "=== Initialize Conda ==="
-          source ~/miniconda3/bin/activate
-          conda activate mlops-cicd
+          echo "=== Find and Setup Conda ==="
+          # Try to find conda in multiple locations
+          CONDA_PATHS=(
+            "$HOME/miniconda3"
+            "$HOME/anaconda3"
+            "/opt/conda"
+            "/usr/local/miniconda3"
+            "/usr/local/anaconda3"
+          )
+          
+          CONDA_FOUND=false
+          CONDA_PATH=""
+          
+          # Search for conda
+          for path in "${CONDA_PATHS[@]}"; do
+            if [ -f "$path/etc/profile.d/conda.sh" ]; then
+              echo "Found conda at: $path"
+              CONDA_PATH="$path"
+              CONDA_FOUND=true
+              break
+            fi
+          done
+          
+          # If not found, check PATH
+          if [ "$CONDA_FOUND" = false ]; then
+            if command -v conda &> /dev/null; then
+              echo "Conda found in PATH: $(which conda)"
+              CONDA_FOUND=true
+              CONDA_PATH=$(conda info --base 2>/dev/null || echo "")
+            fi
+          fi
+          
+          if [ "$CONDA_FOUND" = true ]; then
+            # Initialize conda
+            if [ -n "$CONDA_PATH" ] && [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
+              source "$CONDA_PATH/etc/profile.d/conda.sh"
+            elif command -v conda &> /dev/null; then
+              eval "$(conda shell.bash hook)" 2>/dev/null || true
+            fi
+            
+            # Activate environment
+            if conda env list 2>/dev/null | grep -q "mlops-cicd"; then
+              echo "Activating conda environment: mlops-cicd"
+              conda activate mlops-cicd
+            else
+              echo "WARNING: conda environment 'mlops-cicd' not found"
+              echo "Available environments:"
+              conda env list 2>/dev/null || true
+            fi
+          else
+            echo "ERROR: Conda not found. Please install conda or use virtual environment."
+            exit 1
+          fi
+          
+          # Verify conda and Python
+          echo "Conda environment: $CONDA_DEFAULT_ENV"
+          echo "Python: $(which python)"
+          echo "Pip: $(which pip)"
           
           echo "=== Pull latest DVC data ==="
           dvc pull
