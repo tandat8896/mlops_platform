@@ -120,20 +120,35 @@ jobs:
           
           echo "=== Check and Install DVC ==="
           if ! command -v dvc &> /dev/null; then
-            echo "DVC not found, trying to install..."
-            # Try pip install
-            if command -v pip3 &> /dev/null; then
-              pip3 install dvc dvc-s3 --user
+            echo "DVC not found, installing from requirements.txt..."
+            
+            # Install pip if not available
+            if ! command -v pip3 &> /dev/null && ! command -v pip &> /dev/null && command -v python3 &> /dev/null; then
+              echo "Installing pip first..."
+              if command -v apt-get &> /dev/null; then
+                sudo apt-get update && sudo apt-get install -y python3-pip
+              elif command -v yum &> /dev/null; then
+                sudo yum install -y python3-pip
+              fi
+            fi
+            
+            # Install from requirements.txt
+            if command -v python3 &> /dev/null; then
+              echo "Installing dependencies from requirements.txt..."
+              python3 -m pip install --user -r requirements.txt
+              export PATH="$HOME/.local/bin:$PATH"
+            elif command -v pip3 &> /dev/null; then
+              pip3 install --user -r requirements.txt
               export PATH="$HOME/.local/bin:$PATH"
             elif command -v pip &> /dev/null; then
-              pip install dvc dvc-s3 --user
+              pip install --user -r requirements.txt
               export PATH="$HOME/.local/bin:$PATH"
             elif [ "$CONDA_FOUND" = true ] && command -v conda &> /dev/null; then
-              conda install -y -c conda-forge dvc dvc-s3
+              conda install -y -c conda-forge --file requirements.txt
             else
-              echo "Cannot install DVC. Please install manually."
+              echo "Cannot install DVC. Python3/pip not found."
               echo "PATH: $PATH"
-              which dvc || echo "DVC not found"
+              which python3 || echo "Python3 not found"
               exit 1
             fi
           fi
