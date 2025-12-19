@@ -185,6 +185,10 @@ jobs:
           if [ "$CONDA_FOUND" = true ]; then
             echo "Using conda environment"
             PYTHON_ENV="conda"
+            # Verify conda environment is activated
+            if [ -n "$CONDA_DEFAULT_ENV" ]; then
+              echo "Conda environment: $CONDA_DEFAULT_ENV"
+            fi
           else
             # Try to use existing venv or conda environment
             VENV_DIR="$REPO_DIR/.venv"
@@ -210,6 +214,36 @@ jobs:
             echo "Python environment activated: $VIRTUAL_ENV"
             echo "Python: $(which python)"
             echo "Pip: $(which pip)"
+          fi
+          
+          echo "=== Check and Install Dependencies ==="
+          # Check if torch is installed (indicator that dependencies are installed)
+          if ! python -c "import torch" 2>/dev/null; then
+            echo "Dependencies not found, installing from requirements.txt..."
+            echo "This may take a while (especially PyTorch ~900MB)..."
+            
+            if [ "$PYTHON_ENV" = "conda" ]; then
+              # Try conda first for PyTorch (faster)
+              echo "Trying conda install for PyTorch..."
+              conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia 2>/dev/null || {
+                echo "Conda install failed, using pip..."
+                pip install --no-cache-dir -r requirements.txt || {
+                  echo "ERROR: Failed to install dependencies"
+                  exit 1
+                }
+              }
+            else
+              pip install --no-cache-dir -r requirements.txt || {
+                echo "ERROR: Failed to install dependencies"
+                echo "Please install manually on EC2:"
+                echo "  pip install -r requirements.txt"
+                exit 1
+              }
+            fi
+            echo "Dependencies installed successfully!"
+          else
+            echo "Dependencies already installed (torch found)"
+            python -c "import torch; print(f'PyTorch version: {torch.__version__}')" 2>/dev/null || true
           fi
           
           echo "=== Cleanup cache to free space ==="
@@ -256,14 +290,33 @@ jobs:
           dvc pull
           
           echo "=== Run DVC pipeline ==="
+          # Set Python unbuffered to see logs in real-time
+          export PYTHONUNBUFFERED=1
+          
           if [ "$DATA_CHANGED" = "true" ]; then
             echo "Data changed detected - forcing training"
-            dvc repro --force
+            echo "Starting training with verbose output..."
+            # Run dvc repro with verbose output and capture logs
+            dvc repro --force -v 2>&1 | tee /tmp/dvc_training.log || {
+              echo "=== Training failed, showing last 100 lines of log ==="
+              tail -n 100 /tmp/dvc_training.log || true
+              exit 1
+            }
           else
             echo "No data changes - running regular pipeline"
-            dvc repro
+            dvc repro -v 2>&1 | tee /tmp/dvc_training.log || {
+              echo "=== Training failed, showing last 100 lines of log ==="
+              tail -n 100 /tmp/dvc_training.log || true
+              exit 1
+            }
           fi
           
+          echo ""
+          echo "=== Training Summary ==="
+          echo "Showing key training metrics from logs..."
+          grep -E "(mAP|Precision|Recall|Epoch|best|results)" /tmp/dvc_training.log | tail -n 50 || echo "No metrics found in logs"
+          
+          echo ""
           echo "=== Push artifacts back to DVC remote ==="
           dvc push
 
