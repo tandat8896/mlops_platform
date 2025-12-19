@@ -8,6 +8,10 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -97,6 +101,9 @@ jobs:
     name: Build Docker image & Push GHCR
     needs: train_on_server
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     outputs:
       image_name: ${{ steps.image.outputs.value }}
 
