@@ -190,53 +190,24 @@ jobs:
             PYTHON_ENV="venv"
             
             # Install python3-venv if needed
-            echo "Checking python3-venv..."
             if ! python3 -m venv --help &> /dev/null; then
               echo "Installing python3-venv..."
               if command -v apt-get &> /dev/null; then
-                sudo apt-get update
-                sudo apt-get install -y python3-venv python3-full python3-pip
-              elif command -v yum &> /dev/null; then
-                sudo yum install -y python3-pip
+                sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
               fi
             fi
             
-            # Create virtual environment if it doesn't exist
+            # Create virtual environment
             VENV_DIR="$REPO_DIR/.venv"
-            if [ ! -d "$VENV_DIR" ]; then
-              echo "Creating virtual environment at $VENV_DIR..."
-              python3 -m venv "$VENV_DIR" 2>&1 || {
-                echo "Failed with standard venv, trying with --system-site-packages"
-                python3 -m venv --system-site-packages "$VENV_DIR" 2>&1 || {
-                  echo "Failed to create venv, checking python3-venv installation"
-                  python3 -m venv --help || echo "python3-venv not available"
-                  exit 1
-                }
-              }
-            fi
-            
-            # Verify venv was created
-            if [ ! -d "$VENV_DIR" ] || [ ! -f "$VENV_DIR/bin/activate" ]; then
-              echo "ERROR: Virtual environment not created properly"
-              echo "VENV_DIR: $VENV_DIR"
-              ls -la "$REPO_DIR" | grep venv || echo "No .venv directory found"
-              exit 1
-            fi
+            echo "Creating virtual environment at $VENV_DIR..."
+            python3 -m venv "$VENV_DIR"
             
             # Activate virtual environment
             source "$VENV_DIR/bin/activate"
-            echo "Virtual environment activated: $VIRTUAL_ENV"
-            echo "Python: $(which python)"
-            echo "Pip: $(which pip)"
+            echo "Virtual environment activated"
             
-            # Verify we're using venv's python/pip
-            if [ "$(which python)" != "$VENV_DIR/bin/python" ]; then
-              echo "WARNING: Not using venv python, forcing PATH update"
-              export PATH="$VENV_DIR/bin:$PATH"
-            fi
-            
-            # Upgrade pip using venv's pip
-            "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
+            # Upgrade pip
+            pip install --upgrade pip
           fi
           
           echo "=== Check and Install DVC ==="
@@ -245,32 +216,20 @@ jobs:
             
             if [ "$PYTHON_ENV" = "conda" ]; then
               # Install using conda
-              echo "Installing DVC using conda..."
-              conda install -y -c conda-forge dvc dvc-s3 || {
-                echo "Conda install failed, trying pip in conda env"
-                pip install dvc dvc-s3
-              }
+              conda install -y -c conda-forge dvc dvc-s3 || pip install dvc dvc-s3
             else
-              # Install from requirements.txt using venv's pip
-              "$VENV_DIR/bin/pip" install -r requirements.txt
+              # Install from requirements.txt
+              pip install -r requirements.txt
             fi
-            
-            # Verify DVC installation
-            if command -v dvc &> /dev/null; then
-              echo "DVC installed successfully: $(which dvc)"
-              dvc --version
-            else
-              echo "DVC installation failed"
-              echo "PATH: $PATH"
-              echo "Python env: $PYTHON_ENV"
-              if [ "$PYTHON_ENV" = "venv" ]; then
-                ls -la "$VENV_DIR/bin/" | grep dvc || echo "DVC not in venv/bin"
-              fi
-              exit 1
-            fi
-          else
-            echo "DVC already installed: $(which dvc)"
+          fi
+          
+          # Verify DVC installation
+          if command -v dvc &> /dev/null; then
+            echo "DVC found: $(which dvc)"
             dvc --version
+          else
+            echo "DVC still not found"
+            exit 1
           fi
           
           echo "=== Pull latest DVC data ==="
