@@ -37,6 +37,19 @@ jobs:
           REPO_DIR="$HOME/Repository/mlops_platform"
           
           echo "Repository directory: $REPO_DIR"
+          
+          # Clone repository if it doesn't exist
+          if [ ! -d "$REPO_DIR" ]; then
+            echo "Repository not found, cloning..."
+            mkdir -p "$HOME/Repository"
+            cd "$HOME/Repository"
+            git clone https://github.com/tandat8896/mlops_platform.git
+            if [ $? -ne 0 ]; then
+              echo "Failed to clone repository"
+              exit 1
+            fi
+          fi
+          
           cd "$REPO_DIR" || { echo "Failed to cd to $REPO_DIR"; exit 1; }
           
           echo "=== Setup PATH ==="
