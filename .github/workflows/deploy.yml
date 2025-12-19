@@ -37,7 +37,32 @@ jobs:
         script: |
           set +e  # Don't exit on error for cleanup commands
           echo "=== Setting up environment ==="
-          cd $HOME/Repository/mlops_platform
+          echo "User: $(whoami)"
+          echo "Home: $HOME"
+          echo "PWD: $(pwd)"
+          
+          # Install Git if not found
+          if ! command -v git &> /dev/null; then
+            echo "Installing Git..."
+            sudo apt-get update -qq
+            sudo apt-get install -y git
+          fi
+          
+          # Setup repository directory
+          REPO_DIR="$HOME/Repository/mlops_platform"
+          if [ ! -d "$REPO_DIR" ]; then
+            echo "Repository directory not found, creating..."
+            mkdir -p "$HOME/Repository"
+            cd "$HOME/Repository"
+            echo "Cloning repository..."
+            git clone https://github.com/tandat8896/mlops_platform.git mlops_platform || {
+              echo "ERROR: Failed to clone repository"
+              exit 1
+            }
+          fi
+          
+          cd "$REPO_DIR"
+          echo "Current directory: $(pwd)"
           
           echo "=== Pull latest code ==="
           git stash || true
@@ -80,8 +105,15 @@ jobs:
           # Install DVC if needed
           if ! command -v dvc &> /dev/null; then
             echo "Installing DVC..."
-            pip install --no-cache-dir dvc[s3]
+            # Make sure pip is available
+            if ! command -v pip &> /dev/null && ! command -v pip3 &> /dev/null; then
+              echo "Installing pip..."
+              sudo apt-get install -y python3-pip
+            fi
+            pip install --no-cache-dir dvc[s3] || pip3 install --no-cache-dir dvc[s3]
           fi
+          
+          set -e  # Re-enable exit on error
           
           echo "=== Check system resources ==="
           echo "Memory:"
