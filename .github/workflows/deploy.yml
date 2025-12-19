@@ -33,15 +33,8 @@ jobs:
         script: |
           echo "=== Setting up environment ==="
           
-          # Find repository directory
-          REPO_DIR=$(find ~ -type d -name "mlops*" -o -name "aio2025*" 2>/dev/null | head -1)
-          if [ -z "$REPO_DIR" ]; then
-            echo "Repository not found, trying common locations..."
-            REPO_DIR="$HOME/Repository/aio2025-mlops-cicd"
-            if [ ! -d "$REPO_DIR" ]; then
-              REPO_DIR="$HOME/mlops-thuc-hanh"
-            fi
-          fi
+          # Set repository directory
+          REPO_DIR="$HOME/Repository/mlops_platform"
           
           echo "Repository directory: $REPO_DIR"
           cd "$REPO_DIR" || { echo "Failed to cd to $REPO_DIR"; exit 1; }
@@ -73,7 +66,9 @@ jobs:
           fi
           
           echo "=== Pull latest code ==="
-          git pull
+          # Ensure remote is set correctly
+          git remote set-url origin https://github.com/tandat8896/mlops_platform.git || git remote add origin https://github.com/tandat8896/mlops_platform.git
+          git pull origin master || git pull origin main
           
           echo "=== Check if data.dvc changed ==="
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
