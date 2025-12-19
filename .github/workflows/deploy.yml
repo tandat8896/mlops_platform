@@ -33,6 +33,23 @@ jobs:
         script: |
           echo "=== Setting up environment ==="
           
+          echo "=== Setup PATH ==="
+          export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+          
+          echo "=== Check and Install Git ==="
+          if ! command -v git &> /dev/null; then
+            echo "Git not found, installing..."
+            if command -v apt-get &> /dev/null; then
+              sudo apt-get update && sudo apt-get install -y git
+            elif command -v yum &> /dev/null; then
+              sudo yum install -y git
+            else
+              echo "Cannot install git automatically. Please install git manually."
+              exit 1
+            fi
+          fi
+          echo "Git version: $(git --version)"
+          
           # Set repository directory
           REPO_DIR="$HOME/Repository/mlops_platform"
           
@@ -52,9 +69,6 @@ jobs:
           
           cd "$REPO_DIR" || { echo "Failed to cd to $REPO_DIR"; exit 1; }
           
-          echo "=== Setup PATH ==="
-          export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-          
           # Try to find and source conda
           if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
             source "$HOME/miniconda3/etc/profile.d/conda.sh"
@@ -70,12 +84,6 @@ jobs:
             echo "Conda activated"
           else
             echo "Conda not found, using system Python"
-          fi
-          
-          echo "=== Check Git ==="
-          if ! command -v git &> /dev/null; then
-            echo "Git not found, installing..."
-            sudo apt-get update && sudo apt-get install -y git || yum install -y git
           fi
           
           echo "=== Pull latest code ==="
