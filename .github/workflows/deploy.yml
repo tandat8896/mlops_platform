@@ -70,41 +70,103 @@ jobs:
           cd "$REPO_DIR" || { echo "Failed to cd to $REPO_DIR"; exit 1; }
           
           echo "=== Find and Setup Conda ==="
-          # Try to find conda in multiple locations
+          # Try to find conda in multiple locations (prioritize miniconda3)
           CONDA_PATHS=(
             "$HOME/miniconda3"
             "$HOME/anaconda3"
             "/opt/conda"
             "/usr/local/miniconda3"
             "/usr/local/anaconda3"
+            "/home/ec2-user/miniconda3"
+            "/home/ubuntu/miniconda3"
+            "/home/$USER/miniconda3"
           )
           
           CONDA_FOUND=false
-          for CONDA_PATH in "${CONDA_PATHS[@]}"; do
-            if [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
-              echo "Found conda at: $CONDA_PATH"
-              source "$CONDA_PATH/etc/profile.d/conda.sh"
+          CONDA_PATH=""
+          
+          # First check standard locations
+          echo "Searching for conda..."
+          for path in "${CONDA_PATHS[@]}"; do
+            if [ -f "$path/etc/profile.d/conda.sh" ]; then
+              echo "Found conda at: $path"
+              CONDA_PATH="$path"
               CONDA_FOUND=true
               break
+            elif [ -d "$path" ]; then
+              echo "Found conda directory at: $path (checking for conda.sh...)"
+              if [ -f "$path/etc/profile.d/conda.sh" ]; then
+                CONDA_PATH="$path"
+                CONDA_FOUND=true
+                break
+              fi
             fi
           done
           
-          if [ "$CONDA_FOUND" = true ]; then
-            echo "Conda initialized"
-            # Try to activate environment
-            conda activate mlops-cicd 2>/dev/null || conda activate base 2>/dev/null || echo "Could not activate conda environment"
-            echo "Conda environment: $CONDA_DEFAULT_ENV"
-            # Add conda bin to PATH
-            export PATH="$CONDA_PREFIX/bin:$PATH"
-          else
-            echo "Conda not found in standard locations"
-            # Try to find conda in PATH
+          # If not found, check PATH and ~/.bashrc
+          if [ "$CONDA_FOUND" = false ]; then
+            echo "Checking PATH for conda..."
             if command -v conda &> /dev/null; then
-              echo "Conda found in PATH"
-              conda activate mlops-cicd 2>/dev/null || conda activate base 2>/dev/null || echo "Could not activate conda environment"
+              echo "Conda found in PATH: $(which conda)"
+              CONDA_FOUND=true
+              # Try to get conda path from conda info
+              CONDA_PATH=$(conda info --base 2>/dev/null || echo "")
+              echo "Conda base: $CONDA_PATH"
             else
-              echo "Conda not found, will try to install DVC with pip"
+              # Check ~/.bashrc for conda initialization
+              echo "Checking ~/.bashrc for conda..."
+              if [ -f "$HOME/.bashrc" ] && grep -q "conda" "$HOME/.bashrc"; then
+                echo "Found conda reference in .bashrc, sourcing it..."
+                source "$HOME/.bashrc" 2>/dev/null || true
+                if command -v conda &> /dev/null; then
+                  CONDA_FOUND=true
+                  CONDA_PATH=$(conda info --base 2>/dev/null || echo "$HOME/miniconda3")
+                fi
+              fi
             fi
+          fi
+          
+          if [ "$CONDA_FOUND" = true ]; then
+            echo "Initializing conda..."
+            # Source conda.sh
+            if [ -n "$CONDA_PATH" ] && [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
+              echo "Sourcing conda.sh from: $CONDA_PATH"
+              source "$CONDA_PATH/etc/profile.d/conda.sh"
+            elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+              echo "Sourcing conda.sh from: $HOME/miniconda3"
+              source "$HOME/miniconda3/etc/profile.d/conda.sh"
+            elif command -v conda &> /dev/null; then
+              echo "Conda already in PATH, initializing..."
+              eval "$(conda shell.bash hook)" 2>/dev/null || true
+            fi
+            
+            # Verify conda is available
+            if command -v conda &> /dev/null; then
+              echo "Conda initialized successfully"
+              conda --version
+              
+              # Try to activate environment
+              if conda env list 2>/dev/null | grep -q "mlops-cicd"; then
+                echo "Activating conda environment: mlops-cicd"
+                conda activate mlops-cicd
+              else
+                echo "Creating conda environment: mlops-cicd"
+                conda create -n mlops-cicd python=3.11 -y
+                conda activate mlops-cicd
+              fi
+              
+              echo "Conda environment: $CONDA_DEFAULT_ENV"
+              echo "Python: $(which python)"
+              echo "Pip: $(which pip)"
+              # Add conda bin to PATH
+              export PATH="$CONDA_PREFIX/bin:$PATH"
+            else
+              echo "WARNING: Conda path found but conda command not available"
+              CONDA_FOUND=false
+            fi
+          else
+            echo "Conda not found in any location, will use virtual environment instead"
+            echo "Searched paths: ${CONDA_PATHS[*]}"
           fi
           
           echo "Current PATH: $PATH"
@@ -118,59 +180,98 @@ jobs:
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
           echo "Data changed: $DATA_CHANGED"
           
-          echo "=== Setup Python Virtual Environment ==="
-          # Install python3-venv if needed
-          if ! python3 -m venv --help &> /dev/null; then
-            echo "Installing python3-venv..."
-            if command -v apt-get &> /dev/null; then
-              sudo apt-get install -y python3-venv python3-full
+          echo "=== Setup Python Environment ==="
+          # Use conda if available, otherwise use venv
+          if [ "$CONDA_FOUND" = true ]; then
+            echo "Using conda environment"
+            PYTHON_ENV="conda"
+          else
+            echo "Using virtual environment (conda not found)"
+            PYTHON_ENV="venv"
+            
+            # Install python3-venv if needed
+            echo "Checking python3-venv..."
+            if ! python3 -m venv --help &> /dev/null; then
+              echo "Installing python3-venv..."
+              if command -v apt-get &> /dev/null; then
+                sudo apt-get update
+                sudo apt-get install -y python3-venv python3-full python3-pip
+              elif command -v yum &> /dev/null; then
+                sudo yum install -y python3-pip
+              fi
             fi
+            
+            # Create virtual environment if it doesn't exist
+            VENV_DIR="$REPO_DIR/.venv"
+            if [ ! -d "$VENV_DIR" ]; then
+              echo "Creating virtual environment at $VENV_DIR..."
+              python3 -m venv "$VENV_DIR" 2>&1 || {
+                echo "Failed with standard venv, trying with --system-site-packages"
+                python3 -m venv --system-site-packages "$VENV_DIR" 2>&1 || {
+                  echo "Failed to create venv, checking python3-venv installation"
+                  python3 -m venv --help || echo "python3-venv not available"
+                  exit 1
+                }
+              }
+            fi
+            
+            # Verify venv was created
+            if [ ! -d "$VENV_DIR" ] || [ ! -f "$VENV_DIR/bin/activate" ]; then
+              echo "ERROR: Virtual environment not created properly"
+              echo "VENV_DIR: $VENV_DIR"
+              ls -la "$REPO_DIR" | grep venv || echo "No .venv directory found"
+              exit 1
+            fi
+            
+            # Activate virtual environment
+            source "$VENV_DIR/bin/activate"
+            echo "Virtual environment activated: $VIRTUAL_ENV"
+            echo "Python: $(which python)"
+            echo "Pip: $(which pip)"
+            
+            # Verify we're using venv's python/pip
+            if [ "$(which python)" != "$VENV_DIR/bin/python" ]; then
+              echo "WARNING: Not using venv python, forcing PATH update"
+              export PATH="$VENV_DIR/bin:$PATH"
+            fi
+            
+            # Upgrade pip using venv's pip
+            "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
           fi
-          
-          # Create virtual environment if it doesn't exist
-          VENV_DIR="$REPO_DIR/.venv"
-          if [ ! -d "$VENV_DIR" ]; then
-            echo "Creating virtual environment..."
-            python3 -m venv "$VENV_DIR" || {
-              echo "Failed to create venv, trying with --system-site-packages"
-              python3 -m venv --system-site-packages "$VENV_DIR"
-            }
-          fi
-          
-          # Activate virtual environment
-          source "$VENV_DIR/bin/activate"
-          echo "Virtual environment activated: $VIRTUAL_ENV"
-          echo "Python: $(which python)"
-          echo "Pip: $(which pip)"
-          
-          # Upgrade pip using venv's pip
-          "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
           
           echo "=== Check and Install DVC ==="
           if ! command -v dvc &> /dev/null; then
             echo "DVC not found, installing from requirements.txt..."
             
-            # Install from requirements.txt using venv's pip
-            "$VENV_DIR/bin/pip" install -r requirements.txt
+            if [ "$PYTHON_ENV" = "conda" ]; then
+              # Install using conda
+              echo "Installing DVC using conda..."
+              conda install -y -c conda-forge dvc dvc-s3 || {
+                echo "Conda install failed, trying pip in conda env"
+                pip install dvc dvc-s3
+              }
+            else
+              # Install from requirements.txt using venv's pip
+              "$VENV_DIR/bin/pip" install -r requirements.txt
+            fi
             
             # Verify DVC installation
-            if [ -f "$VENV_DIR/bin/dvc" ]; then
-              echo "DVC installed successfully: $VENV_DIR/bin/dvc"
-              "$VENV_DIR/bin/dvc" --version
+            if command -v dvc &> /dev/null; then
+              echo "DVC installed successfully: $(which dvc)"
+              dvc --version
             else
               echo "DVC installation failed"
               echo "PATH: $PATH"
-              echo "Checking venv: $VENV_DIR"
-              ls -la "$VENV_DIR/bin/" | grep dvc || echo "DVC not in venv/bin"
+              echo "Python env: $PYTHON_ENV"
+              if [ "$PYTHON_ENV" = "venv" ]; then
+                ls -la "$VENV_DIR/bin/" | grep dvc || echo "DVC not in venv/bin"
+              fi
               exit 1
             fi
           else
             echo "DVC already installed: $(which dvc)"
             dvc --version
           fi
-          
-          # Ensure venv/bin is in PATH
-          export PATH="$VENV_DIR/bin:$PATH"
           
           echo "=== Pull latest DVC data ==="
           dvc pull
