@@ -4,7 +4,7 @@ Một dự án MLOps hoàn chỉnh với YOLO model training, experiment trackin
 
 ## 📋 Mô tả
 
-Dự án này triển khai một pipeline MLOps đầy đủ cho việc training và deploy YOLO model phát hiện khuyết tật (defect detection), bao gồm:
+Dự án này triển khai một pipeline MLOps đầy đủ cho việc training và deploy YOLO model **phát hiện đối tượng (Object Detection)** trên dataset COCO128 với 80 loại đối tượng (người, xe cộ, động vật, đồ vật,...), bao gồm:
 
 - **Model Training**: Training YOLO model với Ultralytics
 - **Experiment Tracking**: Theo dõi experiments với MLflow

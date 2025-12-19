@@ -1,8 +1,11 @@
 """
-YOLO Training Script for Defect Detection
+YOLO Training Script for COCO Object Detection
 
-This script trains a YOLO model on the defect detection dataset.
+This script trains a YOLO model on the COCO dataset (80 classes).
 It integrates with MLflow for experiment tracking and model management.
+
+Detected objects include: person, bicycle, car, motorcycle, airplane, bus, 
+train, truck, boat, traffic light, animals, furniture, electronics, etc.
 """
 
 import os
@@ -48,7 +51,7 @@ def train_yolo(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Train YOLO model on the defect detection dataset.
+    Train YOLO model on the COCO object detection dataset (80 classes).
     Supports YOLOv8 and YOLOv11 (requires ultralytics>=8.3.0).
     
     Args:
@@ -365,7 +368,7 @@ def register_model_to_mlflow(
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Train YOLOv11 for defect detection")
+    parser = argparse.ArgumentParser(description="Train YOLOv11 for COCO object detection (80 classes)")
     
     # Training arguments
     parser.add_argument(

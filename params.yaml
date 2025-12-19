@@ -1,4 +1,5 @@
-# DVC Pipeline Parameters
+# DVC Pipeline Parameters for COCO Object Detection
+# Model: YOLOv11 | Dataset: COCO128 (80 classes)
 
 train:
   epochs: 5

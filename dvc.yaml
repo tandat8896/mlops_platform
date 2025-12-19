@@ -1,5 +1,6 @@
-# DVC Pipeline Configuration
-# This pipeline tracks data changes and triggers training
+# DVC Pipeline Configuration for COCO Object Detection
+# This pipeline tracks data changes and triggers YOLO training
+# Model: YOLOv11 | Dataset: COCO128 (80 object classes)
 
 stages:
   train:

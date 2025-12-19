@@ -65,3 +65,4 @@ echo "=== Summary ==="
 echo "1. Use HTTP (not HTTPS): http://13.212.160.80:8000/health"
 echo "2. Ensure Security Group allows port 8000 (TCP) from your IP or 0.0.0.0/0"
 echo "3. Check container logs above for any errors"
+

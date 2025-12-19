@@ -69,3 +69,4 @@ echo ""
 echo "6. Attempting DVC push (verbose)..."
 dvc push -v 2>&1 | head -30
 
+
