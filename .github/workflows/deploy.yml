@@ -118,37 +118,33 @@ jobs:
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
           echo "Data changed: $DATA_CHANGED"
           
+          echo "=== Setup Python Virtual Environment ==="
+          # Create virtual environment if it doesn't exist
+          VENV_DIR="$REPO_DIR/.venv"
+          if [ ! -d "$VENV_DIR" ]; then
+            echo "Creating virtual environment..."
+            python3 -m venv "$VENV_DIR"
+          fi
+          
+          # Activate virtual environment
+          source "$VENV_DIR/bin/activate"
+          echo "Virtual environment activated: $VIRTUAL_ENV"
+          
+          # Upgrade pip
+          pip install --upgrade pip
+          
           echo "=== Check and Install DVC ==="
           if ! command -v dvc &> /dev/null; then
             echo "DVC not found, installing from requirements.txt..."
             
-            # Install pip if not available
-            if ! command -v pip3 &> /dev/null && ! command -v pip &> /dev/null && command -v python3 &> /dev/null; then
-              echo "Installing pip first..."
-              if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y python3-pip
-              elif command -v yum &> /dev/null; then
-                sudo yum install -y python3-pip
-              fi
-            fi
+            # Install from requirements.txt in virtual environment
+            pip install -r requirements.txt
             
-            # Install from requirements.txt
-            if command -v python3 &> /dev/null; then
-              echo "Installing dependencies from requirements.txt..."
-              python3 -m pip install --user -r requirements.txt
-              export PATH="$HOME/.local/bin:$PATH"
-            elif command -v pip3 &> /dev/null; then
-              pip3 install --user -r requirements.txt
-              export PATH="$HOME/.local/bin:$PATH"
-            elif command -v pip &> /dev/null; then
-              pip install --user -r requirements.txt
-              export PATH="$HOME/.local/bin:$PATH"
-            elif [ "$CONDA_FOUND" = true ] && command -v conda &> /dev/null; then
-              conda install -y -c conda-forge --file requirements.txt
+            # Verify DVC installation
+            if command -v dvc &> /dev/null; then
+              echo "DVC installed successfully"
             else
-              echo "Cannot install DVC. Python3/pip not found."
-              echo "PATH: $PATH"
-              which python3 || echo "Python3 not found"
+              echo "DVC installation failed"
               exit 1
             fi
           fi
