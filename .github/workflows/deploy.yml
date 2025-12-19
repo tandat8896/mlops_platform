@@ -49,22 +49,33 @@ jobs:
           echo "Data changed: $DATA_CHANGED"
           
           echo "=== Initialize Conda ==="
-          echo "Checking conda locations..."
+          CONDA_AVAILABLE=false
           if [ -f "$HOME/miniconda3/bin/activate" ]; then
             echo "Found: $HOME/miniconda3/bin/activate"
             source "$HOME/miniconda3/bin/activate"
+            CONDA_AVAILABLE=true
           elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
             echo "Found: $HOME/miniconda3/etc/profile.d/conda.sh"
             source "$HOME/miniconda3/etc/profile.d/conda.sh"
+            CONDA_AVAILABLE=true
           elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
             echo "Found: $HOME/anaconda3/etc/profile.d/conda.sh"
             source "$HOME/anaconda3/etc/profile.d/conda.sh"
+            CONDA_AVAILABLE=true
           elif command -v conda &> /dev/null; then
             echo "Found conda in PATH: $(which conda)"
             eval "$(conda shell.bash hook)" 2>/dev/null || true
+            CONDA_AVAILABLE=true
+          fi
+          
+          if [ "$CONDA_AVAILABLE" = true ]; then
+            conda activate mlops-cicd || {
+              echo "Environment mlops-cicd not found, creating..."
+              conda create -n mlops-cicd python=3.11 -y
+              conda activate mlops-cicd
+            }
           else
-            echo "Conda not found in standard locations"
-            echo "Trying venv..."
+            echo "Conda not found, trying venv..."
             if [ -f ".venv/bin/activate" ]; then
               source .venv/bin/activate
             elif [ -f "$HOME/venv-mlops/bin/activate" ]; then
@@ -74,12 +85,6 @@ jobs:
               exit 1
             fi
           fi
-          
-          conda activate mlops-cicd || {
-            echo "Environment mlops-cicd not found, creating..."
-            conda create -n mlops-cicd python=3.11 -y
-            conda activate mlops-cicd
-          }
           
           # Install DVC if needed
           if ! command -v dvc &> /dev/null; then
@@ -103,9 +108,9 @@ jobs:
             echo "✓ MLflow server already running"
           else
             echo "Starting MLflow server in background..."
-            # Kill any existing MLflow process
-            pkill -f "mlflow server" 2>/dev/null || true
-            sleep 2
+            # Kill any existing MLflow process (non-blocking)
+            (pkill -f "mlflow server" 2>/dev/null; sleep 2) &
+            sleep 3
             
             # Start MLflow server
             nohup python -m mlflow server \
