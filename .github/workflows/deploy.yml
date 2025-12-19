@@ -32,18 +32,60 @@ jobs:
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
         script: |
           echo "=== Setting up environment ==="
-          cd /home/thuannd/Repository/aio2025-mlops-cicd
+          
+          # Find repository directory
+          REPO_DIR=$(find ~ -type d -name "mlops*" -o -name "aio2025*" 2>/dev/null | head -1)
+          if [ -z "$REPO_DIR" ]; then
+            echo "Repository not found, trying common locations..."
+            REPO_DIR="$HOME/Repository/aio2025-mlops-cicd"
+            if [ ! -d "$REPO_DIR" ]; then
+              REPO_DIR="$HOME/mlops-thuc-hanh"
+            fi
+          fi
+          
+          echo "Repository directory: $REPO_DIR"
+          cd "$REPO_DIR" || { echo "Failed to cd to $REPO_DIR"; exit 1; }
+          
+          echo "=== Setup PATH ==="
+          export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+          
+          # Try to find and source conda
+          if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+            source "$HOME/miniconda3/etc/profile.d/conda.sh"
+          elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+            source "$HOME/anaconda3/etc/profile.d/conda.sh"
+          elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
+            source "/opt/conda/etc/profile.d/conda.sh"
+          fi
+          
+          # Activate conda environment if conda is available
+          if command -v conda &> /dev/null; then
+            conda activate mlops-cicd || conda activate base
+            echo "Conda activated"
+          else
+            echo "Conda not found, using system Python"
+          fi
+          
+          echo "=== Check Git ==="
+          if ! command -v git &> /dev/null; then
+            echo "Git not found, installing..."
+            sudo apt-get update && sudo apt-get install -y git || yum install -y git
+          fi
           
           echo "=== Pull latest code ==="
           git pull
           
           echo "=== Check if data.dvc changed ==="
-          DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only | grep -q "data.dvc" && echo "true" || echo "false")
+          DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
           echo "Data changed: $DATA_CHANGED"
           
-          echo "=== Initialize Conda ==="
-          source ~/miniconda3/bin/activate
-          conda activate mlops-cicd
+          echo "=== Check DVC ==="
+          if ! command -v dvc &> /dev/null; then
+            echo "DVC not found in PATH"
+            echo "PATH: $PATH"
+            which dvc || echo "DVC not found"
+            exit 1
+          fi
           
           echo "=== Pull latest DVC data ==="
           dvc pull
