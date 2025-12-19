@@ -24,15 +24,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Build training Docker image
-      run: |
-        docker build -f Dockerfile.train -t mlops-train:latest .
-
-    - name: Save training image
-      run: |
-        docker save mlops-train:latest | gzip > train-image.tar.gz
-
-    - name: SSH and run training in Docker
+    - name: SSH and run training
       uses: appleboy/ssh-action@v1.1.0
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -426,31 +418,92 @@ jobs:
               python:3.11.9-slim \
               bash -c "pip install --no-cache-dir mlflow==3.7.0 && mlflow server --backend-store-uri sqlite:////mlflow/mlflow.db --serve-artifacts --host 0.0.0.0 --port 5000"
             
-            # Wait for MLflow server to be ready
+            # Wait for MLflow server to be ready (check both health and API endpoint)
             echo "Waiting for MLflow server to start..."
-            for i in {1..30}; do
-              if curl -s http://localhost:5001/health > /dev/null 2>&1; then
+            MLFLOW_READY=false
+            for i in {1..60}; do
+              # Check if container is running
+              if ! docker ps | grep -q "mlflow_server"; then
+                echo "MLflow container not running, waiting..."
+                sleep 2
+                continue
+              fi
+              
+              # Check MLflow API endpoint (more reliable than health endpoint)
+              if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
                 echo "✓ MLflow server is ready!"
+                MLFLOW_READY=true
                 break
               fi
-              if [ $i -eq 30 ]; then
-                echo "WARNING: MLflow server may not be ready, but continuing..."
+              
+              # Also try health endpoint as fallback
+              if curl -s -f http://localhost:5001/health > /dev/null 2>&1; then
+                echo "✓ MLflow server is ready (via health endpoint)!"
+                MLFLOW_READY=true
+                break
+              fi
+              
+              if [ $i -eq 60 ]; then
+                echo "WARNING: MLflow server may not be ready after 2 minutes"
+                echo "Container logs:"
+                docker logs mlflow_server --tail 20 || true
               fi
               sleep 2
             done
+            
+            if [ "$MLFLOW_READY" = "false" ]; then
+              echo "ERROR: MLflow server failed to start properly"
+              echo "Container status:"
+              docker ps -a | grep mlflow_server || true
+              echo "Container logs:"
+              docker logs mlflow_server --tail 50 || true
+              exit 1
+            fi
           fi
           
           # Verify MLflow server is accessible
-          echo "MLflow server status:"
-          curl -s http://localhost:5001/health || echo "WARNING: Cannot connect to MLflow server"
+          echo "=== Verifying MLflow server connection ==="
+          MLFLOW_URI="http://localhost:5001"
+          if curl -s -f "$MLFLOW_URI/api/2.0/mlflow/experiments/search" > /dev/null 2>&1; then
+            echo "✓ MLflow server is accessible at $MLFLOW_URI"
+          else
+            echo "WARNING: Cannot verify MLflow server connection"
+            echo "Trying to check container status..."
+            docker ps | grep mlflow_server || echo "MLflow container not found"
+          fi
           
-          # Set MLflow tracking URI environment variable
-          export MLFLOW_TRACKING_URI="http://localhost:5001"
+          # Set MLflow tracking URI environment variable (ensure it's available to Python)
+          export MLFLOW_TRACKING_URI="$MLFLOW_URI"
           echo "MLFLOW_TRACKING_URI set to: $MLFLOW_TRACKING_URI"
+          
+          # Test MLflow connection with Python
+          echo "=== Testing MLflow connection with Python ==="
+          python3 -c "
+import os
+import sys
+os.environ['MLFLOW_TRACKING_URI'] = '$MLFLOW_URI'
+try:
+    import mlflow
+    mlflow.set_tracking_uri('$MLFLOW_URI')
+    # Try to list experiments
+    client = mlflow.tracking.MlflowClient()
+    experiments = client.search_experiments()
+    print(f'✓ MLflow connection successful! Found {len(experiments)} experiments')
+except Exception as e:
+    print(f'✗ MLflow connection failed: {e}')
+    sys.exit(1)
+" || {
+            echo "WARNING: MLflow Python connection test failed, but continuing..."
+          }
           
           echo "=== Run DVC pipeline ==="
           # Set Python unbuffered to see logs in real-time
           export PYTHONUNBUFFERED=1
+          
+          # Verify environment variables are set
+          echo "Environment variables for training:"
+          echo "  MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI"
+          echo "  PYTHONUNBUFFERED=$PYTHONUNBUFFERED"
           
           if [ "$DATA_CHANGED" = "true" ]; then
             echo "Data changed detected - forcing training"
