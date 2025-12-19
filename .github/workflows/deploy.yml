@@ -82,16 +82,82 @@ jobs:
             pip install --no-cache-dir dvc[s3]
           fi
           
+          echo "=== Check system resources ==="
+          echo "Memory:"
+          free -h
+          echo "Disk space:"
+          df -h $HOME/Repository/mlops_platform
+          
+          echo "=== Cleanup before training ==="
+          # Kill any stuck processes
+          pkill -f "dvc repro" 2>/dev/null || true
+          pkill -f "python.*train.py" 2>/dev/null || true
+          sleep 2
+          
+          # Remove DVC lock files
+          rm -f .dvc/tmp/rwlock 2>/dev/null || true
+          
+          # Clean Python cache
+          find . -type d -name __pycache__ -exec rm -r {} + 2>/dev/null || true
+          find . -type f -name "*.pyc" -delete 2>/dev/null || true
+          
+          echo "=== Start MLflow Server ==="
+          # Check if MLflow server is already running
+          if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
+            echo "✓ MLflow server already running"
+          else
+            echo "Starting MLflow server..."
+            # Install MLflow if needed
+            if ! python -c "import mlflow" 2>/dev/null; then
+              pip install --no-cache-dir mlflow==3.7.0
+            fi
+            
+            # Create MLflow data directory
+            mkdir -p mlflow/run_env/data
+            cd mlflow/run_env/data
+            
+            # Start MLflow server in background
+            nohup python -m mlflow server \
+              --backend-store-uri sqlite:///./mlflow.db \
+              --serve-artifacts \
+              --host 0.0.0.0 \
+              --port 5001 \
+              > /tmp/mlflow.log 2>&1 &
+            
+            echo "Waiting for MLflow server..."
+            sleep 5
+            for i in {1..10}; do
+              if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
+                echo "✓ MLflow server ready"
+                break
+              fi
+              sleep 2
+            done
+            
+            cd $HOME/Repository/mlops_platform
+          fi
+          
+          export MLFLOW_TRACKING_URI="http://localhost:5001"
+          echo "MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI"
+          
           echo "=== Pull latest DVC data ==="
           dvc pull
           
           echo "=== Run DVC pipeline ==="
           if [ "$DATA_CHANGED" = "true" ]; then
             echo "Data changed detected - forcing training"
-            dvc repro --force
+            dvc repro --force 2>&1 | tee /tmp/dvc_training.log
           else
             echo "No data changes - running regular pipeline"
-            dvc repro
+            dvc repro 2>&1 | tee /tmp/dvc_training.log
+          fi
+          
+          echo "=== Check training result ==="
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "ERROR: Training failed with exit code ${PIPESTATUS[0]}"
+            echo "Last 50 lines of training log:"
+            tail -50 /tmp/dvc_training.log
+            exit 1
           fi
           
           echo "=== Push artifacts back to DVC remote ==="
