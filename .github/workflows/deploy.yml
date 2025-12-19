@@ -32,7 +32,17 @@ jobs:
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
         script: |
           echo "=== Setting up environment ==="
-          cd $HOME/Repository/mlops_platform
+          # Create directory structure if it doesn't exist
+          mkdir -p $HOME/Repository
+          cd $HOME/Repository
+          
+          # Clone repo if it doesn't exist
+          if [ ! -d "mlops_platform" ]; then
+            echo "Repository not found, cloning..."
+            git clone https://github.com/tandat8896/mlops_platform.git
+          fi
+          
+          cd mlops_platform
           
           echo "=== Pull latest code ==="
           git pull
