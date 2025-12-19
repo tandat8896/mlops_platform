@@ -43,8 +43,40 @@ jobs:
           echo "Data changed: $DATA_CHANGED"
           
           echo "=== Initialize Conda ==="
-          source ~/miniconda3/bin/activate
-          conda activate mlops-cicd
+          # Try to find and activate conda
+          if [ -f "$HOME/miniconda3/bin/activate" ]; then
+            source "$HOME/miniconda3/bin/activate"
+          elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+            source "$HOME/miniconda3/etc/profile.d/conda.sh"
+          elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+            source "$HOME/anaconda3/etc/profile.d/conda.sh"
+          elif command -v conda &> /dev/null; then
+            eval "$(conda shell.bash hook)" 2>/dev/null || true
+          else
+            echo "Conda not found, using venv..."
+            if [ -f ".venv/bin/activate" ]; then
+              source .venv/bin/activate
+            elif [ -f "$HOME/venv-mlops/bin/activate" ]; then
+              source $HOME/venv-mlops/bin/activate
+            else
+              echo "ERROR: No Python environment found!"
+              exit 1
+            fi
+          fi
+          
+          # Activate conda environment if conda is available
+          if command -v conda &> /dev/null; then
+            conda activate mlops-cicd || {
+              conda create -n mlops-cicd python=3.11 -y
+              conda activate mlops-cicd
+            }
+          fi
+          
+          # Install DVC if needed
+          if ! command -v dvc &> /dev/null; then
+            echo "Installing DVC..."
+            pip install --no-cache-dir dvc[s3]
+          fi
           
           echo "=== Pull latest DVC data ==="
           dvc pull
