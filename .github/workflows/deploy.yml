@@ -64,23 +64,9 @@ jobs:
           cd "$REPO_DIR"
           echo "Current directory: $(pwd)"
           
-          echo "=== Check git remote ==="
-          echo "Current remotes:"
-          git remote -v
-          
-          # Ensure origin points to correct repo (don't remove other remotes)
-          if git remote get-url origin 2>/dev/null | grep -q "tandat8896/mlops_platform"; then
-            echo "✓ Origin remote is correct"
-          else
-            echo "Setting origin to correct repository..."
-            git remote set-url origin https://github.com/tandat8896/mlops_platform.git 2>/dev/null || \
-            git remote add origin https://github.com/tandat8896/mlops_platform.git
-          fi
-          
           echo "=== Pull latest code ==="
           git stash || true
-          git fetch origin
-          git pull origin master || git pull origin main
+          git pull
           
           echo "=== Check if data.dvc changed ==="
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only 2>/dev/null | grep -q "data.dvc" && echo "true" || echo "false")
