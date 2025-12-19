@@ -31,21 +31,24 @@ jobs:
         port: ${{ secrets.EC2_PORT_SSH }}
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
         script: |
-          # Don't exit on error for cleanup commands, but exit for critical failures
+          # Don't exit on error for cleanup commands
           set +e  # Allow commands to fail without exiting
           echo "=== Setting up environment ==="
           cd $HOME/Repository/mlops_platform || { echo "Failed to cd to repo directory"; exit 1; }
           
-          # Function to safely kill processes (never fails)
+          # Function to safely kill processes (never fails, never exits)
           safe_kill() {
+            set +e  # Ensure we don't exit in this function
             local pattern=$1
             pkill -TERM -f "$pattern" 2>/dev/null || true
-            sleep 1
+            sleep 2
             pkill -9 -f "$pattern" 2>/dev/null || true
+            # Also kill by port
+            (lsof -ti:5001 2>/dev/null | xargs kill -9 2>/dev/null) || true
+            return 0  # Always succeed
           }
           
-          # Enable exit on error for critical commands
-          set -e
+          # Keep set +e for the rest of the script to handle errors gracefully
           
           echo "=== Pull latest code ==="
           # Stash or reset local changes to allow pull
@@ -244,32 +247,22 @@ jobs:
               pip3 install --no-cache-dir mlflow==3.7.0 || pip install --no-cache-dir mlflow==3.7.0
             fi
             
-            # Check if MLflow server is already running and accessible
-            MLFLOW_RUNNING=false
-            if pgrep -f "mlflow server" > /dev/null 2>&1; then
-              echo "MLflow server process found, checking if accessible..."
-              if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
-                echo "✓ MLflow server is already running and accessible"
-                MLFLOW_RUNNING=true
-              else
-                echo "MLflow process found but not accessible, killing and restarting..."
-                # Use safe_kill function
-                safe_kill "mlflow server"
-                # Also kill anything on port 5001
-                (lsof -ti:5001 | xargs kill -9 2>/dev/null) || true
-                sleep 1
-              fi
-            fi
-            
-            if [ "$MLFLOW_RUNNING" = false ]; then
-              echo "Starting MLflow server in background..."
+            # Check if MLflow server is accessible
+            MLFLOW_READY=false
+            if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
+              echo "✓ MLflow server is already running and accessible"
+              MLFLOW_READY=true
+            else
+              echo "MLflow server not accessible, will start it..."
+              # Try to clean up old processes in background (non-blocking)
+              (pkill -f "mlflow server" 2>/dev/null; sleep 1; pkill -9 -f "mlflow server" 2>/dev/null; lsof -ti:5001 | xargs kill -9 2>/dev/null) &
+              
               cd "$MLFLOW_DATA_DIR" || { echo "Failed to cd to MLFLOW_DATA_DIR"; exit 1; }
               
-              # Ensure port 5001 is free (use safe_kill if needed)
-              (lsof -ti:5001 | xargs kill -9 2>/dev/null) || true
-              safe_kill "mlflow server" || true
-              sleep 1
+              # Wait a bit for cleanup
+              sleep 3
               
+              echo "Starting MLflow server in background..."
               # Start MLflow server
               nohup python3 -m mlflow server \
                 --backend-store-uri sqlite:///./mlflow.db \
@@ -281,7 +274,7 @@ jobs:
               echo "MLflow server started with PID: $MLFLOW_PID"
               
               # Give it a moment to start
-              sleep 3
+              sleep 5
               
               # Wait for MLflow server to be ready
               echo "Waiting for MLflow server to start..."
@@ -289,13 +282,21 @@ jobs:
                 sleep 2
                 if curl -s -f http://localhost:5001/api/2.0/mlflow/experiments/search > /dev/null 2>&1; then
                   echo "✓ MLflow server is ready!"
+                  MLFLOW_READY=true
                   break
                 fi
                 if [ $i -eq 30 ]; then
                   echo "WARNING: MLflow server may not be ready after 1 minute"
-                  tail -n 20 /tmp/mlflow.log || true
+                  echo "Checking MLflow process..."
+                  ps aux | grep "mlflow server" | grep -v grep || echo "No MLflow process found"
+                  tail -n 20 /tmp/mlflow.log 2>/dev/null || echo "No MLflow log found"
                 fi
               done
+            fi
+            
+            if [ "$MLFLOW_READY" = false ]; then
+              echo "WARNING: MLflow server may not be ready, but continuing with training..."
+              echo "Training script will retry MLflow connection automatically"
             fi
           fi
           
