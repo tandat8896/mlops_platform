@@ -189,25 +189,42 @@ jobs:
             echo "Using virtual environment (conda not found)"
             PYTHON_ENV="venv"
             
-            # Install python3-venv if needed
-            if ! python3 -m venv --help &> /dev/null; then
-              echo "Installing python3-venv..."
-              if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
-              fi
+            # Install python3-venv package (required for venv)
+            echo "Installing python3-venv..."
+            if command -v apt-get &> /dev/null; then
+              sudo apt-get update
+              # Try specific version first, then generic
+              sudo apt-get install -y python3.12-venv python3-full python3-pip || \
+              sudo apt-get install -y python3-venv python3-full python3-pip
             fi
             
             # Create virtual environment
             VENV_DIR="$REPO_DIR/.venv"
             echo "Creating virtual environment at $VENV_DIR..."
-            python3 -m venv "$VENV_DIR"
+            python3 -m venv "$VENV_DIR" || {
+              echo "Failed to create venv, trying with --without-pip"
+              python3 -m venv --without-pip "$VENV_DIR"
+              # Install pip manually
+              curl https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+              "$VENV_DIR/bin/python" /tmp/get-pip.py
+            }
+            
+            # Verify venv was created
+            if [ ! -f "$VENV_DIR/bin/activate" ]; then
+              echo "ERROR: Virtual environment not created"
+              exit 1
+            fi
             
             # Activate virtual environment
             source "$VENV_DIR/bin/activate"
-            echo "Virtual environment activated"
+            echo "Virtual environment activated: $VIRTUAL_ENV"
+            
+            # Verify we're using venv's python/pip
+            echo "Python: $(which python)"
+            echo "Pip: $(which pip)"
             
             # Upgrade pip
-            pip install --upgrade pip
+            pip install --upgrade pip setuptools wheel
           fi
           
           echo "=== Check and Install DVC ==="
