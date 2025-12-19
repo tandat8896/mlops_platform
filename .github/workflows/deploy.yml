@@ -41,7 +41,10 @@ jobs:
           DATA_CHANGED=$(git diff HEAD~1 HEAD --name-only | grep -q "data.dvc" && echo "true" || echo "false")
           echo "Data changed: $DATA_CHANGED"
           
-          echo "=== Find and Setup Conda ==="
+          echo "=== Find and Setup Python Environment ==="
+          # Setup PATH first
+          export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+          
           # Try to find conda in multiple locations
           CONDA_PATHS=(
             "$HOME/miniconda3"
@@ -49,12 +52,14 @@ jobs:
             "/opt/conda"
             "/usr/local/miniconda3"
             "/usr/local/anaconda3"
+            "/home/ec2-user/miniconda3"
+            "/home/ubuntu/miniconda3"
           )
           
           CONDA_FOUND=false
           CONDA_PATH=""
           
-          # Search for conda
+          # Search for conda in paths
           for path in "${CONDA_PATHS[@]}"; do
             if [ -f "$path/etc/profile.d/conda.sh" ]; then
               echo "Found conda at: $path"
@@ -64,7 +69,19 @@ jobs:
             fi
           done
           
-          # If not found, check PATH
+          # If not found, check .bashrc or .bash_profile
+          if [ "$CONDA_FOUND" = false ]; then
+            if [ -f "$HOME/.bashrc" ] && grep -q "conda" "$HOME/.bashrc"; then
+              echo "Found conda reference in .bashrc, sourcing..."
+              source "$HOME/.bashrc" 2>/dev/null || true
+              if command -v conda &> /dev/null; then
+                CONDA_FOUND=true
+                CONDA_PATH=$(conda info --base 2>/dev/null || echo "")
+              fi
+            fi
+          fi
+          
+          # If still not found, check PATH
           if [ "$CONDA_FOUND" = false ]; then
             if command -v conda &> /dev/null; then
               echo "Conda found in PATH: $(which conda)"
@@ -74,6 +91,7 @@ jobs:
           fi
           
           if [ "$CONDA_FOUND" = true ]; then
+            echo "Using Conda environment"
             # Initialize conda
             if [ -n "$CONDA_PATH" ] && [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
               source "$CONDA_PATH/etc/profile.d/conda.sh"
@@ -91,14 +109,43 @@ jobs:
               conda env list 2>/dev/null || true
             fi
           else
-            echo "ERROR: Conda not found. Please install conda or use virtual environment."
-            exit 1
+            echo "Conda not found, trying virtual environment or system Python..."
+            # Try virtual environment
+            VENV_DIR="$HOME/Repository/mlops_platform/.venv"
+            VENV_HOME="$HOME/venv-mlops"
+            
+            if [ -f "$VENV_DIR/bin/activate" ]; then
+              echo "Using virtual environment at: $VENV_DIR"
+              source "$VENV_DIR/bin/activate"
+            elif [ -f "$VENV_HOME/bin/activate" ]; then
+              echo "Using virtual environment at: $VENV_HOME"
+              source "$VENV_HOME/bin/activate"
+            else
+              echo "No virtual environment found, using system Python"
+              # Check if Python is available
+              if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
+                echo "ERROR: Python not found!"
+                exit 1
+              fi
+            fi
           fi
           
-          # Verify conda and Python
-          echo "Conda environment: $CONDA_DEFAULT_ENV"
-          echo "Python: $(which python)"
-          echo "Pip: $(which pip)"
+          # Verify Python environment
+          echo "Python environment: ${CONDA_DEFAULT_ENV:-${VIRTUAL_ENV:-system}}"
+          echo "Python: $(which python3 2>/dev/null || which python 2>/dev/null || echo 'not found')"
+          echo "Pip: $(which pip3 2>/dev/null || which pip 2>/dev/null || echo 'not found')"
+          
+          # Check if DVC is installed, if not install it
+          if ! command -v dvc &> /dev/null; then
+            echo "DVC not found, installing..."
+            if [ "$CONDA_FOUND" = true ]; then
+              conda install -y -c conda-forge dvc dvc-s3 || pip install --no-cache-dir dvc[s3]
+            else
+              pip3 install --no-cache-dir dvc[s3] || pip install --no-cache-dir dvc[s3]
+            fi
+          fi
+          
+          echo "DVC version: $(dvc --version 2>/dev/null || echo 'not found')"
           
           echo "=== Pull latest DVC data ==="
           dvc pull
