@@ -90,10 +90,23 @@ jobs:
           df -h $HOME/Repository/mlops_platform
           
           echo "=== Cleanup before training ==="
-          # Remove DVC lock files (safe, won't kill current process)
-          rm -f .dvc/tmp/rwlock 2>/dev/null || true
+          # Kill any stuck dvc repro processes (but not current script)
+          CURRENT_PID=$$
+          for pid in $(ps aux | grep "[d]vc repro" | awk '{print $2}'); do
+            if [ "$pid" != "$CURRENT_PID" ]; then
+              echo "Killing stuck dvc repro process: $pid"
+              kill -9 "$pid" 2>/dev/null || true
+            fi
+          done
           
-          # Clean Python cache (safe)
+          # Wait a bit for processes to die
+          sleep 3
+          
+          # Remove DVC lock files
+          rm -f .dvc/tmp/rwlock 2>/dev/null || true
+          rm -rf .dvc/tmp/* 2>/dev/null || true
+          
+          # Clean Python cache
           find . -type d -name __pycache__ -exec rm -r {} + 2>/dev/null || true
           find . -type f -name "*.pyc" -delete 2>/dev/null || true
           
